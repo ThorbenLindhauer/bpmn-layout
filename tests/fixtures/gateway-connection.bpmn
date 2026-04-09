@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+             xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+             id="gateway-connection" targetNamespace="http://bpmn.io/schema/bpmn">
+  <process id="process1" isExecutable="false">
+    <startEvent id="start1" name="Start"/>
+    <exclusiveGateway id="gw1" name="Decision"/>
+    <task id="taskA" name="Task A"/>
+    <task id="taskB" name="Task B"/>
+    <exclusiveGateway id="gw2" name="Merge"/>
+    <endEvent id="end1" name="End"/>
+    <sequenceFlow id="sf1" sourceRef="start1" targetRef="gw1"/>
+    <sequenceFlow id="sf2" sourceRef="gw1" targetRef="taskA"/>
+    <sequenceFlow id="sf3" sourceRef="gw1" targetRef="taskB"/>
+    <sequenceFlow id="sf4" sourceRef="taskA" targetRef="gw2"/>
+    <sequenceFlow id="sf5" sourceRef="taskB" targetRef="gw2"/>
+    <sequenceFlow id="sf6" sourceRef="gw2" targetRef="end1"/>
+  </process>
+  <bpmndi:BPMNDiagram id="diagram1">
+    <bpmndi:BPMNPlane id="plane1" bpmnElement="process1"/>
+  </bpmndi:BPMNDiagram>
+</definitions>
