@@ -97,6 +97,117 @@ describe('parallel gateway', () => {
   });
 });
 
+// ─── waypoint boundary connection ────────────────────────────────────────────
+
+/**
+ * Returns true when `point` lies on one of the four edges of `bounds`,
+ * within the given pixel tolerance.
+ */
+function isOnBoundary(
+  point: { x: number; y: number },
+  bounds: { x: number; y: number; width: number; height: number },
+  tol = 1,
+): boolean {
+  const { x, y, width, height } = bounds;
+  const inXRange = point.x >= x - tol && point.x <= x + width + tol;
+  const inYRange = point.y >= y - tol && point.y <= y + height + tol;
+  const onLeft   = Math.abs(point.x - x) <= tol && inYRange;
+  const onRight  = Math.abs(point.x - (x + width)) <= tol && inYRange;
+  const onTop    = Math.abs(point.y - y) <= tol && inXRange;
+  const onBottom = Math.abs(point.y - (y + height)) <= tol && inXRange;
+  return onLeft || onRight || onTop || onBottom;
+}
+
+describe('sequence flow waypoints connect to shape boundaries', () => {
+  it('first waypoint of every edge lies on its source shape boundary', async () => {
+    const result = await layout(fixture('gateway-connection.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const boundsById = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+
+    for (const edge of edges) {
+      const srcId = edge.bpmnElement.sourceRef?.id ?? edge.bpmnElement.sourceRef;
+      const firstWp = edge.waypoint[0];
+      const srcBounds = boundsById[srcId];
+      expect(srcBounds, `bounds not found for source ${srcId}`).toBeDefined();
+      expect(
+        isOnBoundary(firstWp, srcBounds),
+        `first waypoint (${firstWp.x},${firstWp.y}) of ${edge.bpmnElement.id} is not on boundary of source ${srcId} ` +
+        `(x:${srcBounds.x} y:${srcBounds.y} w:${srcBounds.width} h:${srcBounds.height})`,
+      ).toBe(true);
+    }
+  });
+
+  it('last waypoint of every edge lies on its target shape boundary', async () => {
+    const result = await layout(fixture('gateway-connection.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const boundsById = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+
+    for (const edge of edges) {
+      const tgtId = edge.bpmnElement.targetRef?.id ?? edge.bpmnElement.targetRef;
+      const lastWp = edge.waypoint[edge.waypoint.length - 1];
+      const tgtBounds = boundsById[tgtId];
+      expect(tgtBounds, `bounds not found for target ${tgtId}`).toBeDefined();
+      expect(
+        isOnBoundary(lastWp, tgtBounds),
+        `last waypoint (${lastWp.x},${lastWp.y}) of ${edge.bpmnElement.id} is not on boundary of target ${tgtId} ` +
+        `(x:${tgtBounds.x} y:${tgtBounds.y} w:${tgtBounds.width} h:${tgtBounds.height})`,
+      ).toBe(true);
+    }
+  });
+});
+
+// ─── boundary events ──────────────────────────────────────────────────────────
+
+describe('boundary events', () => {
+  it('creates a BPMNShape for the boundary event', async () => {
+    const result = await layout(fixture('boundary-event.bpmn'));
+    const { shapes } = await parseDi(result);
+    const ids = shapes.map((s: any) => s.bpmnElement.id);
+    expect(ids).toContain('be1');
+  });
+
+  it('boundary event center lies on the boundary of its host activity', async () => {
+    const result = await layout(fixture('boundary-event.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+
+    const hostBounds = byId['task1'];
+    const beBounds   = byId['be1'];
+    expect(hostBounds).toBeDefined();
+    expect(beBounds).toBeDefined();
+
+    const beCenter = { x: beBounds.x + beBounds.width / 2, y: beBounds.y + beBounds.height / 2 };
+    expect(
+      isOnBoundary(beCenter, hostBounds),
+      `boundary event center (${beCenter.x},${beCenter.y}) is not on host boundary ` +
+      `(x:${hostBounds.x} y:${hostBounds.y} w:${hostBounds.width} h:${hostBounds.height})`,
+    ).toBe(true);
+  });
+
+  it('boundary event does not overlap the interior of the host activity', async () => {
+    const result = await layout(fixture('boundary-event.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+
+    const h = byId['task1'];
+    const b = byId['be1'];
+    const beCenter = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+
+    // Center must NOT be strictly inside the host rectangle
+    const strictlyInside =
+      beCenter.x > h.x && beCenter.x < h.x + h.width &&
+      beCenter.y > h.y && beCenter.y < h.y + h.height;
+    expect(strictlyInside).toBe(false);
+  });
+
+  it('sequence flows attached to the boundary event still get edges', async () => {
+    const result = await layout(fixture('boundary-event.bpmn'));
+    const { edges } = await parseDi(result);
+    const ids = edges.map((e: any) => e.bpmnElement.id);
+    expect(ids).toContain('sf3');
+  });
+});
+
 // ─── loop (cyclic graph) ─────────────────────────────────────────────────────
 
 describe('loop (cyclic graph)', () => {
