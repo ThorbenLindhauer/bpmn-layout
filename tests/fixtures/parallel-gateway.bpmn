@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+             xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+             id="parallel-gateway" targetNamespace="http://bpmn.io/schema/bpmn">
+  <process id="process1" isExecutable="false">
+    <startEvent id="start1" name="Start"/>
+    <parallelGateway id="fork1" name="Fork"/>
+    <task id="taskA" name="Task A"/>
+    <task id="taskB" name="Task B"/>
+    <parallelGateway id="join1" name="Join"/>
+    <endEvent id="end1" name="End"/>
+    <sequenceFlow id="sf1" sourceRef="start1" targetRef="fork1"/>
+    <sequenceFlow id="sf2" sourceRef="fork1" targetRef="taskA"/>
+    <sequenceFlow id="sf3" sourceRef="fork1" targetRef="taskB"/>
+    <sequenceFlow id="sf4" sourceRef="taskA" targetRef="join1"/>
+    <sequenceFlow id="sf5" sourceRef="taskB" targetRef="join1"/>
+    <sequenceFlow id="sf6" sourceRef="join1" targetRef="end1"/>
+  </process>
+  <bpmndi:BPMNDiagram id="diagram1">
+    <bpmndi:BPMNPlane id="plane1" bpmnElement="process1"/>
+  </bpmndi:BPMNDiagram>
+</definitions>

@@ -1,0 +1,32 @@
+{
+  "name": "bpmn-layout",
+  "version": "0.1.0",
+  "description": "Automatic layout for BPMN models using ELK",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "demo": "vite demo"
+  },
+  "dependencies": {
+    "bpmn-moddle": "^8.1.0",
+    "elkjs": "^0.9.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.0",
+    "bpmn-js": "^17.0.0",
+    "typescript": "^5.4.0",
+    "vite": "^5.2.0",
+    "vite-plugin-dts": "^3.9.0",
+    "vitest": "^1.5.0"
+  }
+}
