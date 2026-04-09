@@ -17,6 +17,9 @@
     "test:watch": "vitest",
     "demo": "vite demo"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "bpmn-moddle": "^8.1.0",
     "elkjs": "^0.9.3"

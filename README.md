@@ -5,6 +5,15 @@ Automatically layout BPMN models using the [ELK](https://eclipse.dev/elk/) layer
 Takes a BPMN XML string, computes left-to-right layout coordinates via `elkjs`, updates the
 BPMN Diagram Interchange (DI), and returns the result as a BPMN XML string.
 
+## Requirements
+
+**Node.js 18 or later** is required. This is the minimum version supported by the build
+toolchain (Vite 5, vitest 1). `??=` and other ES2021 operators used internally by those tools
+require at least Node 15, but Node 18 is the practical floor.
+
+If you use [nvm](https://github.com/nvm-sh/nvm), run `nvm use` in the project root — the
+included `.nvmrc` pins the version to Node 18.
+
 ## Installation
 
 ```sh
