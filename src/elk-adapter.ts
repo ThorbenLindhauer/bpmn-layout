@@ -70,39 +70,75 @@ const ELK_LAYOUT_OPTIONS = {
 // ─── ELK graph building ───────────────────────────────────────────────────────
 
 /**
- * Recursively build an ELK node for a BPMN process/subprocess.
- * Boundary events are excluded from ELK nodes — they are positioned separately.
+ * Build an ELK node for a BPMN process/subprocess.
+ *
+ * Boundary events are modelled as zero-size ELK **ports** on their host
+ * activity with side=SOUTH.  This keeps them in the topology so ELK can
+ * route their outgoing/incoming flows without crossings, while still
+ * producing a host-boundary connection point.
  */
 function buildElkChildren(
   process: any,
 ): { children: ElkNode[]; edges: ElkExtendedEdge[] } {
   const flowElements: any[] = process.flowElements ?? [];
 
-  // Exclude boundary events from regular layout nodes
-  const flowNodes = flowElements.filter(
+  // Separate boundary events from regular layout nodes
+  const boundaryEvents = flowElements.filter((e: any) => e.$type === 'bpmn:BoundaryEvent');
+  const regularFlowNodes = flowElements.filter(
     (e: any) => isFlowNode(e) && e.$type !== 'bpmn:BoundaryEvent',
   );
-  const sequenceFlows = flowElements.filter((e: any) => EDGE_TYPES.has(e.$type));
+  const allFlows = flowElements.filter((e: any) => EDGE_TYPES.has(e.$type));
 
-  const nodeIdSet = new Set(flowNodes.map((n: any) => n.id as string));
+  const regularNodeIds = new Set(regularFlowNodes.map((n: any) => n.id as string));
+  const boundaryEventIds = new Set(boundaryEvents.map((be: any) => be.id as string));
+  // Both regular nodes and boundary-event ports can be edge endpoints
+  const connectableIds = new Set([...regularNodeIds, ...boundaryEventIds]);
 
-  const children: ElkNode[] = flowNodes.map((node: any) => {
+  // Group boundary events by their host node id
+  const beByHost = new Map<string, any[]>();
+  for (const be of boundaryEvents) {
+    const hostId: string | undefined = be.attachedToRef?.id;
+    if (!hostId) continue;
+    if (!beByHost.has(hostId)) beByHost.set(hostId, []);
+    beByHost.get(hostId)!.push(be);
+  }
+
+  const children: ElkNode[] = regularFlowNodes.map((node: any) => {
     const size = sizeOf(node);
-    const elkNode: ElkNode = { id: node.id as string, width: size.width, height: size.height };
+    const bEvents = beByHost.get(node.id as string) ?? [];
 
+    const elkNode: ElkNode = {
+      id: node.id as string,
+      width: size.width,
+      height: size.height,
+    };
+
+    // Model boundary events as zero-size SOUTH ports so ELK knows about
+    // their connections when computing node layers and edge routes.
+    if (bEvents.length > 0) {
+      elkNode.layoutOptions = { 'elk.portConstraints': 'FIXED_SIDE' };
+      elkNode.ports = bEvents.map((be: any) => ({
+        id: be.id as string,
+        width: 0,
+        height: 0,
+        layoutOptions: { 'elk.port.side': 'SOUTH' },
+      }));
+    }
+
+    // Recurse into subprocesses
     if ((node.flowElements as any[] | undefined)?.length) {
       const sub = buildElkChildren(node);
       elkNode.children = sub.children;
       elkNode.edges = sub.edges;
-      elkNode.layoutOptions = ELK_LAYOUT_OPTIONS;
+      elkNode.layoutOptions = { ...elkNode.layoutOptions, ...ELK_LAYOUT_OPTIONS };
     }
 
     return elkNode;
   });
 
-  // Only include flows whose source AND target are both regular (non-boundary) nodes
-  const edges: ElkExtendedEdge[] = sequenceFlows
-    .filter((sf: any) => nodeIdSet.has(sf.sourceRef?.id) && nodeIdSet.has(sf.targetRef?.id))
+  // Include all flows where both endpoints are regular nodes OR boundary-event ports
+  const edges: ElkExtendedEdge[] = allFlows
+    .filter((sf: any) => connectableIds.has(sf.sourceRef?.id) && connectableIds.has(sf.targetRef?.id))
     .map((sf: any) => ({
       id: sf.id as string,
       sources: [sf.sourceRef.id as string],
@@ -115,34 +151,6 @@ function buildElkChildren(
 function buildElkGraph(process: any): ElkNode {
   const { children, edges } = buildElkChildren(process);
   return { id: process.id as string, layoutOptions: ELK_LAYOUT_OPTIONS, children, edges };
-}
-
-// ─── collect boundary events and their flows ──────────────────────────────────
-
-/** Walk all flowElements (including nested subprocesses) to collect boundary events. */
-function collectBoundaryEvents(elements: any[], result: any[] = []): any[] {
-  for (const el of elements) {
-    if (el.$type === 'bpmn:BoundaryEvent') result.push(el);
-    if (el.flowElements) collectBoundaryEvents(el.flowElements, result);
-  }
-  return result;
-}
-
-/**
- * Collect sequence flows that touch a boundary event
- * (i.e. flows that ELK does not handle because the boundary event was excluded).
- */
-function collectBoundaryFlows(elements: any[], boundaryIds: Set<string>, result: any[] = []): any[] {
-  for (const el of elements) {
-    if (
-      EDGE_TYPES.has(el.$type) &&
-      (boundaryIds.has(el.sourceRef?.id) || boundaryIds.has(el.targetRef?.id))
-    ) {
-      result.push(el);
-    }
-    if (el.flowElements) collectBoundaryFlows(el.flowElements, boundaryIds, result);
-  }
-  return result;
 }
 
 // ─── DI building ─────────────────────────────────────────────────────────────
@@ -159,6 +167,10 @@ function extractWaypoints(edge: ElkExtendedEdge): Array<{ x: number; y: number }
   return points;
 }
 
+/**
+ * Walk ELK output nodes/edges and create BPMNShape/BPMNEdge DI elements.
+ * Also processes ports (boundary events) nested inside each child node.
+ */
 function collectShapesAndEdges(
   elkNode: ElkNode,
   moddle: BpmnModdle,
@@ -189,6 +201,37 @@ function collectShapesAndEdges(
       }),
     );
 
+    // ── boundary events modelled as ELK ports ────────────────────────────
+    for (const port of child.ports ?? []) {
+      const portElement = elementMap.get(port.id);
+      if (!portElement) continue;
+
+      // The port is zero-size and sits at the host boundary.
+      // portX / portY are relative to child; the port's (x,y) IS the
+      // centre of the rendered boundary-event shape.
+      const portCX = absX + (port.x ?? 0);
+      const portCY = absY + (port.y ?? 0);
+      const size = sizeOf(portElement);
+
+      const beBounds: Bounds = {
+        x: portCX - size.width / 2,
+        y: portCY - size.height / 2,
+        width: size.width,
+        height: size.height,
+      };
+
+      boundsMap.set(port.id as string, beBounds);
+
+      shapes.push(
+        (moddle as any).create('bpmndi:BPMNShape', {
+          id: `${port.id}_di`,
+          bpmnElement: portElement,
+          bounds: (moddle as any).create('dc:Bounds', beBounds),
+        }),
+      );
+    }
+
+    // Recurse into subprocesses
     if (child.children?.length) {
       const sub = collectShapesAndEdges(child, moddle, elementMap, boundsMap, absX, absY);
       shapes.push(...sub.shapes);
@@ -216,129 +259,67 @@ function collectShapesAndEdges(
   return { shapes, edges };
 }
 
-// ─── boundary event positioning ───────────────────────────────────────────────
+// ─── waypoint snapping ───────────────────────────────────────────────────────
 
 /**
- * Place each boundary event at the bottom edge of its host activity.
- * Multiple boundary events on the same host are distributed evenly along the bottom.
+ * Find the point on the boundary of `bounds` that lies on the ray from the
+ * bounds centre toward `from`.  Used to snap edge waypoints from the zero-size
+ * port centre to the edge of the rendered (36 × 36) boundary-event shape.
  */
-function positionBoundaryEvents(
-  boundaryEvents: any[],
-  boundsMap: Map<string, Bounds>,
-  moddle: BpmnModdle,
-): { shapes: any[]; newBounds: Map<string, Bounds> } {
-  const shapes: any[] = [];
-  const newBounds = new Map<string, Bounds>();
-
-  // Group by host activity id
-  const byHost = new Map<string, any[]>();
-  for (const be of boundaryEvents) {
-    const hostId: string | undefined = be.attachedToRef?.id;
-    if (!hostId) continue;
-    if (!byHost.has(hostId)) byHost.set(hostId, []);
-    byHost.get(hostId)!.push(be);
-  }
-
-  for (const [hostId, events] of byHost) {
-    const hostBounds = boundsMap.get(hostId);
-    if (!hostBounds) continue;
-
-    const count = events.length;
-    for (let i = 0; i < count; i++) {
-      const be = events[i];
-      const size = sizeOf(be); // 36 × 36
-
-      // Distribute evenly along the bottom edge of the host
-      const fraction = (i + 1) / (count + 1);
-      const cx = hostBounds.x + hostBounds.width * fraction;
-      const cy = hostBounds.y + hostBounds.height; // bottom edge
-
-      const beBounds: Bounds = {
-        x: cx - size.width / 2,
-        y: cy - size.height / 2,
-        width: size.width,
-        height: size.height,
-      };
-
-      newBounds.set(be.id as string, beBounds);
-
-      shapes.push(
-        (moddle as any).create('bpmndi:BPMNShape', {
-          id: `${be.id}_di`,
-          bpmnElement: be,
-          bounds: (moddle as any).create('dc:Bounds', beBounds),
-        }),
-      );
-    }
-  }
-
-  return { shapes, newBounds };
-}
-
-// ─── boundary flow edge creation ──────────────────────────────────────────────
-
-/**
- * Find the point on the boundary of `bounds` closest to `from`,
- * by projecting the center-to-`from` ray onto the rectangle boundary.
- */
-function boundaryPoint(from: { x: number; y: number }, bounds: Bounds): { x: number; y: number } {
+function boundaryPoint(
+  from: { x: number; y: number },
+  bounds: Bounds,
+): { x: number; y: number } {
   const cx = bounds.x + bounds.width / 2;
   const cy = bounds.y + bounds.height / 2;
   const dx = from.x - cx;
   const dy = from.y - cy;
 
-  if (dx === 0 && dy === 0) return { x: cx, y: bounds.y }; // degenerate
+  if (dx === 0 && dy === 0) return { x: cx, y: bounds.y };
 
   const halfW = bounds.width / 2;
   const halfH = bounds.height / 2;
-  const sx = halfW / Math.abs(dx);
-  const sy = halfH / Math.abs(dy);
-  const s = Math.min(sx, sy);
+  const s = Math.min(halfW / Math.abs(dx), halfH / Math.abs(dy));
 
   return { x: Math.round(cx + dx * s), y: Math.round(cy + dy * s) };
 }
 
 /**
- * Create BPMNEdge elements for flows whose source or target is a boundary event.
- * Uses two waypoints: source-side boundary → target-side boundary.
+ * ELK connects edges to zero-size ports at their centre point, but the
+ * rendered boundary-event shape is 36 × 36.  Snap the first waypoint of
+ * BE-sourced edges (and last waypoint of BE-targeted edges) to the actual
+ * shape boundary so the arrow visually touches the circle.
  */
-function createBoundaryFlowEdges(
-  boundaryFlows: any[],
-  allBoundsMap: Map<string, Bounds>,
-  elementMap: Map<string, any>,
+function snapBoundaryEventWaypoints(
+  plane: any,
+  boundsMap: Map<string, Bounds>,
+  boundaryEventIds: Set<string>,
   moddle: BpmnModdle,
-): any[] {
-  const edges: any[] = [];
+): void {
+  for (const el of plane.planeElement) {
+    if (el.$type !== 'bpmndi:BPMNEdge') continue;
+    const wps: any[] = el.waypoint;
+    if (wps.length < 2) continue;
 
-  for (const flow of boundaryFlows) {
-    const srcId: string = flow.sourceRef?.id;
-    const tgtId: string = flow.targetRef?.id;
-    const srcBounds = allBoundsMap.get(srcId);
-    const tgtBounds = allBoundsMap.get(tgtId);
-    if (!srcBounds || !tgtBounds) continue;
+    const srcId: string | undefined = el.bpmnElement.sourceRef?.id;
+    const tgtId: string | undefined = el.bpmnElement.targetRef?.id;
 
-    const srcCenter = { x: srcBounds.x + srcBounds.width / 2, y: srcBounds.y + srcBounds.height / 2 };
-    const tgtCenter = { x: tgtBounds.x + tgtBounds.width / 2, y: tgtBounds.y + tgtBounds.height / 2 };
+    if (srcId && boundaryEventIds.has(srcId)) {
+      const beBounds = boundsMap.get(srcId);
+      if (beBounds) {
+        const snapped = boundaryPoint({ x: wps[1].x, y: wps[1].y }, beBounds);
+        wps[0] = (moddle as any).create('dc:Point', snapped);
+      }
+    }
 
-    const wp0 = boundaryPoint(tgtCenter, srcBounds);
-    const wp1 = boundaryPoint(srcCenter, tgtBounds);
-
-    const element = elementMap.get(flow.id);
-    if (!element) continue;
-
-    edges.push(
-      (moddle as any).create('bpmndi:BPMNEdge', {
-        id: `${flow.id}_di`,
-        bpmnElement: element,
-        waypoint: [
-          (moddle as any).create('dc:Point', wp0),
-          (moddle as any).create('dc:Point', wp1),
-        ],
-      }),
-    );
+    if (tgtId && boundaryEventIds.has(tgtId)) {
+      const beBounds = boundsMap.get(tgtId);
+      if (beBounds) {
+        const snapped = boundaryPoint({ x: wps[wps.length - 2].x, y: wps[wps.length - 2].y }, beBounds);
+        wps[wps.length - 1] = (moddle as any).create('dc:Point', snapped);
+      }
+    }
   }
-
-  return edges;
 }
 
 // ─── element map ─────────────────────────────────────────────────────────────
@@ -382,20 +363,16 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
   const plane = definitions.diagrams[0].plane;
   plane.planeElement = [];
 
-  // Shared bounds map populated as we place shapes
   const boundsMap = new Map<string, Bounds>();
 
-  // Collect all boundary events and boundary-touching flows across processes
-  const allBoundaryEvents: any[] = [];
-  const allBoundaryFlows: any[] = [];
+  // Collect boundary-event IDs across all processes for waypoint snapping
+  const allBoundaryEventIds = new Set<string>();
 
   for (const process of processes) {
-    const boundaryEvents = collectBoundaryEvents(process.flowElements ?? []);
-    allBoundaryEvents.push(...boundaryEvents);
-
-    const boundaryIds = new Set(boundaryEvents.map((be: any) => be.id as string));
-    const boundaryFlows = collectBoundaryFlows(process.flowElements ?? [], boundaryIds);
-    allBoundaryFlows.push(...boundaryFlows);
+    // Collect boundary event IDs
+    for (const el of (process.flowElements ?? []) as any[]) {
+      if (el.$type === 'bpmn:BoundaryEvent') allBoundaryEventIds.add(el.id as string);
+    }
 
     const elkGraph = buildElkGraph(process);
     const laidOut = await elk.layout(elkGraph);
@@ -403,20 +380,8 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
     plane.planeElement.push(...shapes, ...edges);
   }
 
-  // Position boundary events on their host activity boundary
-  const { shapes: beShapes, newBounds: beBoundsMap } = positionBoundaryEvents(
-    allBoundaryEvents,
-    boundsMap,
-    moddle,
-  );
-  plane.planeElement.push(...beShapes);
-
-  // Merge boundary event bounds into the shared map for edge routing below
-  for (const [id, b] of beBoundsMap) boundsMap.set(id, b);
-
-  // Create edges for flows involving boundary events
-  const beEdges = createBoundaryFlowEdges(allBoundaryFlows, boundsMap, elementMap, moddle);
-  plane.planeElement.push(...beEdges);
+  // Snap edge waypoints from port centres to the rendered BE shape boundary
+  snapBoundaryEventWaypoints(plane, boundsMap, allBoundaryEventIds, moddle);
 
   const { xml } = await (moddle as any).toXML(definitions, { format: true });
   return xml as string;

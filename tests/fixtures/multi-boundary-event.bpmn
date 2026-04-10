@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+             xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+             id="multi-boundary-event" targetNamespace="http://bpmn.io/schema/bpmn">
+  <process id="process1" isExecutable="false">
+    <startEvent id="start1" name="Start"/>
+    <task id="task1" name="Task 1"/>
+    <task id="task2" name="Task 2"/>
+    <task id="task3" name="Task 3"/>
+    <endEvent id="end1" name="End"/>
+
+    <!-- boundary events on task1 and task2 -->
+    <boundaryEvent id="be1" attachedToRef="task1" cancelActivity="true">
+      <timerEventDefinition id="timerDef1"/>
+    </boundaryEvent>
+    <boundaryEvent id="be2" attachedToRef="task2" cancelActivity="false">
+      <messageEventDefinition id="msgDef1"/>
+    </boundaryEvent>
+
+    <!-- happy path -->
+    <endEvent id="errorEnd1" name="Timer End"/>
+    <endEvent id="errorEnd2" name="Msg End"/>
+
+    <sequenceFlow id="sf1" sourceRef="start1" targetRef="task1"/>
+    <sequenceFlow id="sf2" sourceRef="task1" targetRef="task2"/>
+    <sequenceFlow id="sf3" sourceRef="task2" targetRef="task3"/>
+    <sequenceFlow id="sf4" sourceRef="task3" targetRef="end1"/>
+
+    <!-- boundary event outgoing flows -->
+    <sequenceFlow id="sf5" sourceRef="be1" targetRef="errorEnd1"/>
+    <sequenceFlow id="sf6" sourceRef="be2" targetRef="errorEnd2"/>
+  </process>
+  <bpmndi:BPMNDiagram id="diagram1">
+    <bpmndi:BPMNPlane id="plane1" bpmnElement="process1"/>
+  </bpmndi:BPMNDiagram>
+</definitions>
