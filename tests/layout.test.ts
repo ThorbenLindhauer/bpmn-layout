@@ -206,6 +206,74 @@ describe('boundary events', () => {
     const ids = edges.map((e: any) => e.bpmnElement.id);
     expect(ids).toContain('sf3');
   });
+
+  it('boundary-event edge first waypoint lies on the boundary event shape boundary', async () => {
+    const result = await layout(fixture('boundary-event.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const boundsById = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    const sf3 = edges.find((e: any) => e.bpmnElement.id === 'sf3');
+    expect(sf3).toBeDefined();
+    const firstWp = sf3.waypoint[0];
+    expect(
+      isOnBoundary(firstWp, boundsById['be1']),
+      `first wp (${firstWp.x},${firstWp.y}) not on be1 boundary ` +
+      JSON.stringify(boundsById['be1']),
+    ).toBe(true);
+  });
+});
+
+// ─── multiple boundary events ─────────────────────────────────────────────────
+
+describe('multiple boundary events', () => {
+  it('creates shapes for all boundary events', async () => {
+    const result = await layout(fixture('multi-boundary-event.bpmn'));
+    const { shapes } = await parseDi(result);
+    const ids = shapes.map((s: any) => s.bpmnElement.id);
+    expect(ids).toContain('be1');
+    expect(ids).toContain('be2');
+  });
+
+  it('each boundary event center lies on the boundary of its own host', async () => {
+    const result = await layout(fixture('multi-boundary-event.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+
+    for (const [beId, hostId] of [['be1', 'task1'], ['be2', 'task2']] as const) {
+      const beCenter = { x: byId[beId].x + byId[beId].width / 2, y: byId[beId].y + byId[beId].height / 2 };
+      expect(
+        isOnBoundary(beCenter, byId[hostId]),
+        `${beId} center (${beCenter.x},${beCenter.y}) not on ${hostId} boundary ` +
+        JSON.stringify(byId[hostId]),
+      ).toBe(true);
+    }
+  });
+
+  it('boundary event outgoing edges exist and first waypoint is on the be boundary', async () => {
+    const result = await layout(fixture('multi-boundary-event.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const boundsById = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+
+    for (const [sfId, beId] of [['sf5', 'be1'], ['sf6', 'be2']] as const) {
+      const edge = edges.find((e: any) => e.bpmnElement.id === sfId);
+      expect(edge, `edge ${sfId} not found`).toBeDefined();
+      const firstWp = edge.waypoint[0];
+      expect(
+        isOnBoundary(firstWp, boundsById[beId]),
+        `${sfId} first wp (${firstWp.x},${firstWp.y}) not on ${beId} boundary ` +
+        JSON.stringify(boundsById[beId]),
+      ).toBe(true);
+    }
+  });
+
+  it('boundary event targets (errorEnd1, errorEnd2) are positioned by ELK', async () => {
+    const result = await layout(fixture('multi-boundary-event.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    // ELK must have given these shapes valid, distinct positions
+    expect(byId['errorEnd1']).toBeDefined();
+    expect(byId['errorEnd2']).toBeDefined();
+    expect(byId['errorEnd1'].x).not.toEqual(byId['errorEnd2'].x);
+  });
 });
 
 // ─── loop (cyclic graph) ─────────────────────────────────────────────────────
