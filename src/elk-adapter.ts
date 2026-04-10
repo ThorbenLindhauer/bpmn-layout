@@ -286,54 +286,108 @@ function rectangleBoundaryPoint(
   return { x: Math.round(cx + dx * s), y: Math.round(cy + dy * s) };
 }
 
-/**
- * Point on the **diamond** boundary of `bounds` in the direction from the
- * centre toward `from`.
- *
- * The diamond has vertices at the midpoints of each bounding-box edge.
- * Its boundary satisfies |ΔX / halfW| + |ΔY / halfH| = 1.
- */
-function diamondBoundaryPoint(
-  from: { x: number; y: number },
-  bounds: Bounds,
-): { x: number; y: number } {
-  const cx = bounds.x + bounds.width / 2;
-  const cy = bounds.y + bounds.height / 2;
-  const dx = from.x - cx;
-  const dy = from.y - cy;
-  if (dx === 0 && dy === 0) return { x: bounds.x, y: cy };
-  const halfW = bounds.width / 2;
-  const halfH = bounds.height / 2;
-  // t such that |t·dx/halfW| + |t·dy/halfH| = 1  →  t = 1 / (|dx|/halfW + |dy|/halfH)
-  const t = 1 / (Math.abs(dx) / halfW + Math.abs(dy) / halfH);
-  return { x: Math.round(cx + dx * t), y: Math.round(cy + dy * t) };
-}
-
-/** Dispatch to the correct boundary calculation based on element type. */
-function visualBoundaryPoint(
-  from: { x: number; y: number },
-  elementType: string,
-  bounds: Bounds,
-): { x: number; y: number } {
-  return GATEWAY_TYPES.has(elementType)
-    ? diamondBoundaryPoint(from, bounds)
-    : rectangleBoundaryPoint(from, bounds);
-}
-
 // ─── waypoint snapping ────────────────────────────────────────────────────────
 
+/** True when a, b, c all share the same x **or** the same y coordinate. */
+function collinear(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  c: { x: number; y: number },
+): boolean {
+  return (
+    (Math.abs(a.x - b.x) < 0.5 && Math.abs(b.x - c.x) < 0.5) ||
+    (Math.abs(a.y - b.y) < 0.5 && Math.abs(b.y - c.y) < 0.5)
+  );
+}
+
 /**
- * Post-process all BPMNEdge waypoints so that the first and last points
- * lie on the *visual* boundary of their source/target shapes:
+ * Snap a gateway source/target endpoint to the correct cardinal diamond vertex
+ * and insert an orthogonal elbow waypoint if the vertex doesn't share an axis
+ * with the adjacent bend point.
  *
- *  - Gateways render as diamonds → use diamond boundary formula.
- *  - Boundary events are zero-size ELK ports; their rendered 36×36 circle
- *    needs the rectangle snap (the centre is already on the host boundary).
- *  - All other shapes (tasks, events) are rectangles → use rectangle snap.
+ * ELK routes edges to the *bounding-box* face of gateways and may spread
+ * multiple connections across the face at different offsets from the centre.
+ * Simply moving the endpoint to the diamond surface while leaving the rest of
+ * the path unchanged creates a diagonal first (or last) segment.
  *
- * ELK already produces correct rectangle-boundary waypoints for rectangular
- * shapes, so the snap is effectively a no-op for them.  For gateways the
- * snap moves the endpoint from the bounding-box face to the diamond face.
+ * The fix: choose the cardinal vertex (right/left/top/bottom tip of the
+ * diamond) whose side the adjacent waypoint is approaching from, then insert
+ * an elbow point so the path stays fully rectilinear.
+ *
+ * The entry/exit side is determined by comparing the adjacent waypoint to the
+ * gateway **centre** — not to the original ELK endpoint — so that a prior
+ * elbow insertion for the opposite end does not confuse the direction.
+ */
+function snapGatewayEndpoint(
+  wps: any[],
+  isSource: boolean,
+  bounds: Bounds,
+  moddle: any,
+): void {
+  const cx = bounds.x + bounds.width / 2;
+  const cy = bounds.y + bounds.height / 2;
+  const halfW = bounds.width / 2;
+  const halfH = bounds.height / 2;
+
+  const epIdx = isSource ? 0 : wps.length - 1;
+  const adjIdx = isSource ? 1 : wps.length - 2;
+  const adj = wps[adjIdx];
+
+  // Use adj's offset from the gateway centre to choose which diamond vertex
+  // the edge connects to.  This is robust even when a prior elbow insertion
+  // for the other endpoint changes the last/first segment direction.
+  const horizontal = Math.abs(adj.x - cx) > Math.abs(adj.y - cy);
+
+  const vertex = horizontal
+    ? { x: Math.round(adj.x > cx ? cx + halfW : cx - halfW), y: Math.round(cy) }
+    : { x: Math.round(cx), y: Math.round(adj.y > cy ? cy + halfH : cy - halfH) };
+
+  wps[epIdx] = (moddle as any).create('dc:Point', vertex);
+
+  // Insert an elbow between vertex and adj when they don't already share the
+  // appropriate axis-aligned coordinate.
+  const needsElbow = horizontal
+    ? Math.abs(vertex.y - adj.y) > 0.5
+    : Math.abs(vertex.x - adj.x) > 0.5;
+
+  if (!needsElbow) return;
+
+  // For H exits/entries the elbow sits at (adj.x, vertex.y): go horizontal
+  // along the diamond axis first, then turn vertically toward adj.y.
+  // For V exits/entries: (vertex.x, adj.y).
+  const elbow = horizontal
+    ? { x: Math.round(adj.x), y: vertex.y }
+    : { x: vertex.x, y: Math.round(adj.y) };
+  const elbowPt = (moddle as any).create('dc:Point', elbow);
+
+  if (isSource) {
+    wps.splice(1, 0, elbowPt);
+    // adj is now at index 2.  Remove it if it became collinear with its
+    // new neighbours (elbow at 1, next bend at 3) — this happens when ELK
+    // placed the first bend directly above/below the elbow (same x or y),
+    // which would produce a redundant U-turn jog.
+    if (wps.length > 3 && collinear(wps[1], wps[2], wps[3])) {
+      wps.splice(2, 1);
+    }
+  } else {
+    wps.splice(wps.length - 1, 0, elbowPt);
+    // adj is now at index n-3; remove if collinear with prev (n-4) and elbow (n-2).
+    const n = wps.length;
+    if (n > 3 && collinear(wps[n - 4], wps[n - 3], wps[n - 2])) {
+      wps.splice(n - 3, 1);
+    }
+  }
+}
+
+/**
+ * Post-process all BPMNEdge waypoints:
+ *
+ *  - Gateways: snap to the cardinal diamond vertex and insert an elbow so
+ *    all segments remain axis-aligned.
+ *  - Boundary events (source only): the ELK port is zero-size; snap the first
+ *    waypoint from the port centre to the rendered 36×36 shape boundary.
+ *  - All other shapes: ELK's orthogonal routing already places waypoints
+ *    correctly on the rectangle boundary — leave them as-is.
  */
 function snapConnectionEndpoints(
   plane: any,
@@ -350,24 +404,24 @@ function snapConnectionEndpoints(
     const tgtId: string | undefined = el.bpmnElement.targetRef?.id;
 
     if (srcId) {
+      const src = elementMap.get(srcId);
       const srcBounds = boundsMap.get(srcId);
-      const srcType: string | undefined = elementMap.get(srcId)?.$type;
-      if (srcBounds && srcType) {
-        const snapped = visualBoundaryPoint({ x: wps[1].x, y: wps[1].y }, srcType, srcBounds);
-        wps[0] = (moddle as any).create('dc:Point', snapped);
+      if (src && srcBounds) {
+        if (GATEWAY_TYPES.has(src.$type as string)) {
+          snapGatewayEndpoint(wps, true, srcBounds, moddle);
+        } else if (src.$type === 'bpmn:BoundaryEvent') {
+          // Move first waypoint from zero-size port centre to shape perimeter.
+          const snapped = rectangleBoundaryPoint({ x: wps[1].x, y: wps[1].y }, srcBounds);
+          wps[0] = (moddle as any).create('dc:Point', snapped);
+        }
       }
     }
 
     if (tgtId) {
+      const tgt = elementMap.get(tgtId);
       const tgtBounds = boundsMap.get(tgtId);
-      const tgtType: string | undefined = elementMap.get(tgtId)?.$type;
-      if (tgtBounds && tgtType) {
-        const snapped = visualBoundaryPoint(
-          { x: wps[wps.length - 2].x, y: wps[wps.length - 2].y },
-          tgtType,
-          tgtBounds,
-        );
-        wps[wps.length - 1] = (moddle as any).create('dc:Point', snapped);
+      if (tgt && tgtBounds && GATEWAY_TYPES.has(tgt.$type as string)) {
+        snapGatewayEndpoint(wps, false, tgtBounds, moddle);
       }
     }
   }
