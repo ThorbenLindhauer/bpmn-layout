@@ -99,6 +99,13 @@ describe('parallel gateway', () => {
 
 // ─── waypoint boundary connection ────────────────────────────────────────────
 
+// ─── waypoint boundary helpers ───────────────────────────────────────────────
+
+const GATEWAY_ELEMENT_TYPES = new Set([
+  'bpmn:ExclusiveGateway', 'bpmn:ParallelGateway', 'bpmn:InclusiveGateway',
+  'bpmn:EventBasedGateway', 'bpmn:ComplexGateway',
+]);
+
 /**
  * Returns true when `point` lies on one of the four edges of `bounds`,
  * within the given pixel tolerance.
@@ -118,40 +125,104 @@ function isOnBoundary(
   return onLeft || onRight || onTop || onBottom;
 }
 
+/**
+ * Returns true when `point` lies on the diamond (rhombus) boundary of `bounds`.
+ * Diamond vertices are the midpoints of each bounding-box edge.
+ * The boundary satisfies |ΔX/halfW| + |ΔY/halfH| = 1.
+ */
+function isOnDiamondBoundary(
+  point: { x: number; y: number },
+  bounds: { x: number; y: number; width: number; height: number },
+  tol = 1,
+): boolean {
+  const cx = bounds.x + bounds.width / 2;
+  const cy = bounds.y + bounds.height / 2;
+  const halfW = bounds.width / 2;
+  const halfH = bounds.height / 2;
+  const val = Math.abs(point.x - cx) / halfW + Math.abs(point.y - cy) / halfH;
+  // Convert tol from pixels to "val" units using the shorter half-axis
+  return Math.abs(val - 1) <= (tol + 1) / Math.min(halfW, halfH);
+}
+
+/** Dispatches to diamond or rectangle boundary check based on element type. */
+function isOnVisualBoundary(
+  point: { x: number; y: number },
+  elementType: string,
+  bounds: { x: number; y: number; width: number; height: number },
+  tol = 1,
+): boolean {
+  return GATEWAY_ELEMENT_TYPES.has(elementType)
+    ? isOnDiamondBoundary(point, bounds, tol)
+    : isOnBoundary(point, bounds, tol);
+}
+
 describe('sequence flow waypoints connect to shape boundaries', () => {
-  it('first waypoint of every edge lies on its source shape boundary', async () => {
+  it('first waypoint of every edge lies on the visual boundary of its source shape', async () => {
     const result = await layout(fixture('gateway-connection.bpmn'));
     const { shapes, edges } = await parseDi(result);
-    const boundsById = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    const infoById = Object.fromEntries(
+      shapes.map((s: any) => [s.bpmnElement.id, { bounds: s.bounds, type: s.bpmnElement.$type }]),
+    );
 
     for (const edge of edges) {
       const srcId = edge.bpmnElement.sourceRef?.id ?? edge.bpmnElement.sourceRef;
       const firstWp = edge.waypoint[0];
-      const srcBounds = boundsById[srcId];
-      expect(srcBounds, `bounds not found for source ${srcId}`).toBeDefined();
+      const src = infoById[srcId];
+      expect(src, `shape not found for source ${srcId}`).toBeDefined();
       expect(
-        isOnBoundary(firstWp, srcBounds),
-        `first waypoint (${firstWp.x},${firstWp.y}) of ${edge.bpmnElement.id} is not on boundary of source ${srcId} ` +
-        `(x:${srcBounds.x} y:${srcBounds.y} w:${srcBounds.width} h:${srcBounds.height})`,
+        isOnVisualBoundary(firstWp, src.type, src.bounds),
+        `first waypoint (${firstWp.x},${firstWp.y}) of ${edge.bpmnElement.id} is not on visual boundary of source ${srcId} ` +
+        `[${src.type}] (x:${src.bounds.x} y:${src.bounds.y} w:${src.bounds.width} h:${src.bounds.height})`,
       ).toBe(true);
     }
   });
 
-  it('last waypoint of every edge lies on its target shape boundary', async () => {
+  it('last waypoint of every edge lies on the visual boundary of its target shape', async () => {
     const result = await layout(fixture('gateway-connection.bpmn'));
     const { shapes, edges } = await parseDi(result);
-    const boundsById = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    const infoById = Object.fromEntries(
+      shapes.map((s: any) => [s.bpmnElement.id, { bounds: s.bounds, type: s.bpmnElement.$type }]),
+    );
 
     for (const edge of edges) {
       const tgtId = edge.bpmnElement.targetRef?.id ?? edge.bpmnElement.targetRef;
       const lastWp = edge.waypoint[edge.waypoint.length - 1];
-      const tgtBounds = boundsById[tgtId];
-      expect(tgtBounds, `bounds not found for target ${tgtId}`).toBeDefined();
+      const tgt = infoById[tgtId];
+      expect(tgt, `shape not found for target ${tgtId}`).toBeDefined();
       expect(
-        isOnBoundary(lastWp, tgtBounds),
-        `last waypoint (${lastWp.x},${lastWp.y}) of ${edge.bpmnElement.id} is not on boundary of target ${tgtId} ` +
-        `(x:${tgtBounds.x} y:${tgtBounds.y} w:${tgtBounds.width} h:${tgtBounds.height})`,
+        isOnVisualBoundary(lastWp, tgt.type, tgt.bounds),
+        `last waypoint (${lastWp.x},${lastWp.y}) of ${edge.bpmnElement.id} is not on visual boundary of target ${tgtId} ` +
+        `[${tgt.type}] (x:${tgt.bounds.x} y:${tgt.bounds.y} w:${tgt.bounds.width} h:${tgt.bounds.height})`,
       ).toBe(true);
+    }
+  });
+
+  it('edges connecting to a gateway have their endpoint strictly on the diamond face', async () => {
+    const result = await layout(fixture('gateway-connection.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const infoById = Object.fromEntries(
+      shapes.map((s: any) => [s.bpmnElement.id, { bounds: s.bounds, type: s.bpmnElement.$type }]),
+    );
+
+    for (const edge of edges) {
+      const srcId = edge.bpmnElement.sourceRef?.id ?? edge.bpmnElement.sourceRef;
+      const tgtId = edge.bpmnElement.targetRef?.id ?? edge.bpmnElement.targetRef;
+
+      if (GATEWAY_ELEMENT_TYPES.has(infoById[srcId]?.type)) {
+        const firstWp = edge.waypoint[0];
+        expect(
+          isOnDiamondBoundary(firstWp, infoById[srcId].bounds),
+          `${edge.bpmnElement.id} first wp (${firstWp.x},${firstWp.y}) not on diamond of ${srcId}`,
+        ).toBe(true);
+      }
+
+      if (GATEWAY_ELEMENT_TYPES.has(infoById[tgtId]?.type)) {
+        const lastWp = edge.waypoint[edge.waypoint.length - 1];
+        expect(
+          isOnDiamondBoundary(lastWp, infoById[tgtId].bounds),
+          `${edge.bpmnElement.id} last wp (${lastWp.x},${lastWp.y}) not on diamond of ${tgtId}`,
+        ).toBe(true);
+      }
     }
   });
 });
