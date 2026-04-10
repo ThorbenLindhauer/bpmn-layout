@@ -65,6 +65,7 @@ const ELK_LAYOUT_OPTIONS = {
   'elk.spacing.nodeNode': '30',
   'elk.edgeRouting': 'ORTHOGONAL',
   'elk.layered.unnecessaryBendpoints': 'true',
+  'elk.layered.nodePlacement.favorStraightEdges': 'true',
 };
 
 // ─── ELK graph building ───────────────────────────────────────────────────────
@@ -106,6 +107,7 @@ function buildElkChildren(
   const children: ElkNode[] = regularFlowNodes.map((node: any) => {
     const size = sizeOf(node);
     const bEvents = beByHost.get(node.id as string) ?? [];
+    const isGateway = GATEWAY_TYPES.has(node.$type as string);
 
     const elkNode: ElkNode = {
       id: node.id as string,
@@ -113,9 +115,34 @@ function buildElkChildren(
       height: size.height,
     };
 
-    // Model boundary events as zero-size SOUTH ports so ELK knows about
-    // their connections when computing node layers and edge routes.
-    if (bEvents.length > 0) {
+    if (isGateway) {
+      // Model the gateway with 4 fixed-position ports at the diamond cardinal vertices.
+      // portConstraints=FIXED_POS tells ELK these positions are exact and immovable.
+      // Edges that name only the node ID (not a port ID) are auto-assigned by ELK's
+      // PortAssignmentProcessor to the best-fitting port (EAST for rightward flows,
+      // NORTH/SOUTH for flows to elements above/below, WEST for backward/loop flows).
+      // Synthetic IDs use double-underscore so they never clash with real BPMN IDs
+      // and are safely skipped in collectShapesAndEdges (not present in elementMap).
+      const { width: w, height: h } = size;
+      elkNode.layoutOptions = { 'elk.portConstraints': 'FIXED_POS' };
+      elkNode.ports = [
+        { id: `${node.id as string}__N`, width: 0, height: 0, x: w / 2, y: 0,   layoutOptions: { 'elk.port.side': 'NORTH' } },
+        { id: `${node.id as string}__S`, width: 0, height: 0, x: w / 2, y: h,   layoutOptions: { 'elk.port.side': 'SOUTH' } },
+        { id: `${node.id as string}__E`, width: 0, height: 0, x: w,     y: h/2, layoutOptions: { 'elk.port.side': 'EAST'  } },
+        { id: `${node.id as string}__W`, width: 0, height: 0, x: 0,     y: h/2, layoutOptions: { 'elk.port.side': 'WEST'  } },
+      ];
+      // Gateways cannot host boundary events per the BPMN spec (BoundaryEvent.attachedToRef
+      // must be an Activity subtype). Guard is defensive only.
+      if (bEvents.length > 0) {
+        elkNode.ports.push(...bEvents.map((be: any) => ({
+          id: be.id as string,
+          width: 0,
+          height: 0,
+          layoutOptions: { 'elk.port.side': 'SOUTH' },
+        })));
+      }
+    } else if (bEvents.length > 0) {
+      // Non-gateway node with boundary events: use FIXED_SIDE (unchanged behaviour).
       elkNode.layoutOptions = { 'elk.portConstraints': 'FIXED_SIDE' };
       elkNode.ports = bEvents.map((be: any) => ({
         id: be.id as string,
@@ -288,105 +315,14 @@ function rectangleBoundaryPoint(
 
 // ─── waypoint snapping ────────────────────────────────────────────────────────
 
-/** True when a, b, c all share the same x **or** the same y coordinate. */
-function collinear(
-  a: { x: number; y: number },
-  b: { x: number; y: number },
-  c: { x: number; y: number },
-): boolean {
-  return (
-    (Math.abs(a.x - b.x) < 0.5 && Math.abs(b.x - c.x) < 0.5) ||
-    (Math.abs(a.y - b.y) < 0.5 && Math.abs(b.y - c.y) < 0.5)
-  );
-}
-
 /**
- * Snap a gateway source/target endpoint to the correct cardinal diamond vertex
- * and insert an orthogonal elbow waypoint if the vertex doesn't share an axis
- * with the adjacent bend point.
+ * Post-process BPMNEdge waypoints for boundary events:
  *
- * ELK routes edges to the *bounding-box* face of gateways and may spread
- * multiple connections across the face at different offsets from the centre.
- * Simply moving the endpoint to the diamond surface while leaving the rest of
- * the path unchanged creates a diagonal first (or last) segment.
- *
- * The fix: choose the cardinal vertex (right/left/top/bottom tip of the
- * diamond) whose side the adjacent waypoint is approaching from, then insert
- * an elbow point so the path stays fully rectilinear.
- *
- * The entry/exit side is determined by comparing the adjacent waypoint to the
- * gateway **centre** — not to the original ELK endpoint — so that a prior
- * elbow insertion for the opposite end does not confuse the direction.
- */
-function snapGatewayEndpoint(
-  wps: any[],
-  isSource: boolean,
-  bounds: Bounds,
-  moddle: any,
-): void {
-  const cx = bounds.x + bounds.width / 2;
-  const cy = bounds.y + bounds.height / 2;
-  const halfW = bounds.width / 2;
-  const halfH = bounds.height / 2;
-
-  const epIdx = isSource ? 0 : wps.length - 1;
-  const adjIdx = isSource ? 1 : wps.length - 2;
-  const adj = wps[adjIdx];
-
-  // Use adj's offset from the gateway centre to choose which diamond vertex
-  // the edge connects to.  This is robust even when a prior elbow insertion
-  // for the other endpoint changes the last/first segment direction.
-  const horizontal = Math.abs(adj.x - cx) > Math.abs(adj.y - cy);
-
-  const vertex = horizontal
-    ? { x: Math.round(adj.x > cx ? cx + halfW : cx - halfW), y: Math.round(cy) }
-    : { x: Math.round(cx), y: Math.round(adj.y > cy ? cy + halfH : cy - halfH) };
-
-  wps[epIdx] = (moddle as any).create('dc:Point', vertex);
-
-  // Insert an elbow between vertex and adj when they don't already share the
-  // appropriate axis-aligned coordinate.
-  const needsElbow = horizontal
-    ? Math.abs(vertex.y - adj.y) > 0.5
-    : Math.abs(vertex.x - adj.x) > 0.5;
-
-  if (!needsElbow) return;
-
-  // For H exits/entries the elbow sits at (adj.x, vertex.y): go horizontal
-  // along the diamond axis first, then turn vertically toward adj.y.
-  // For V exits/entries: (vertex.x, adj.y).
-  const elbow = horizontal
-    ? { x: Math.round(adj.x), y: vertex.y }
-    : { x: vertex.x, y: Math.round(adj.y) };
-  const elbowPt = (moddle as any).create('dc:Point', elbow);
-
-  if (isSource) {
-    wps.splice(1, 0, elbowPt);
-    // adj is now at index 2.  Remove it if it became collinear with its
-    // new neighbours (elbow at 1, next bend at 3) — this happens when ELK
-    // placed the first bend directly above/below the elbow (same x or y),
-    // which would produce a redundant U-turn jog.
-    if (wps.length > 3 && collinear(wps[1], wps[2], wps[3])) {
-      wps.splice(2, 1);
-    }
-  } else {
-    wps.splice(wps.length - 1, 0, elbowPt);
-    // adj is now at index n-3; remove if collinear with prev (n-4) and elbow (n-2).
-    const n = wps.length;
-    if (n > 3 && collinear(wps[n - 4], wps[n - 3], wps[n - 2])) {
-      wps.splice(n - 3, 1);
-    }
-  }
-}
-
-/**
- * Post-process all BPMNEdge waypoints:
- *
- *  - Gateways: snap to the cardinal diamond vertex and insert an elbow so
- *    all segments remain axis-aligned.
  *  - Boundary events (source only): the ELK port is zero-size; snap the first
  *    waypoint from the port centre to the rendered 36×36 shape boundary.
- *  - All other shapes: ELK's orthogonal routing already places waypoints
+ *  - Gateways: ELK now routes directly from/to the diamond cardinal vertex via
+ *    explicit FIXED_POS ports — no snapping needed.
+ *  - All other shapes: ELK's ORTHOGONAL routing already places waypoints
  *    correctly on the rectangle boundary — leave them as-is.
  */
 function snapConnectionEndpoints(
@@ -401,30 +337,111 @@ function snapConnectionEndpoints(
     if (wps.length < 2) continue;
 
     const srcId: string | undefined = el.bpmnElement.sourceRef?.id;
-    const tgtId: string | undefined = el.bpmnElement.targetRef?.id;
-
     if (srcId) {
       const src = elementMap.get(srcId);
       const srcBounds = boundsMap.get(srcId);
-      if (src && srcBounds) {
-        if (GATEWAY_TYPES.has(src.$type as string)) {
-          snapGatewayEndpoint(wps, true, srcBounds, moddle);
-        } else if (src.$type === 'bpmn:BoundaryEvent') {
-          // Move first waypoint from zero-size port centre to shape perimeter.
-          const snapped = rectangleBoundaryPoint({ x: wps[1].x, y: wps[1].y }, srcBounds);
-          wps[0] = (moddle as any).create('dc:Point', snapped);
-        }
-      }
-    }
-
-    if (tgtId) {
-      const tgt = elementMap.get(tgtId);
-      const tgtBounds = boundsMap.get(tgtId);
-      if (tgt && tgtBounds && GATEWAY_TYPES.has(tgt.$type as string)) {
-        snapGatewayEndpoint(wps, false, tgtBounds, moddle);
+      if (src && srcBounds && src.$type === 'bpmn:BoundaryEvent') {
+        // Move first waypoint from zero-size port centre to shape perimeter.
+        const snapped = rectangleBoundaryPoint({ x: wps[1].x, y: wps[1].y }, srcBounds);
+        wps[0] = (moddle as any).create('dc:Point', snapped);
       }
     }
   }
+}
+
+// ─── two-pass gateway port assignment ────────────────────────────────────────
+
+/**
+ * Build a map from node ID to absolute layout bounds from an ELK result tree.
+ */
+function buildElkPositionMap(
+  node: ElkNode,
+  map = new Map<string, { x: number; y: number; width: number; height: number }>(),
+  offsetX = 0,
+  offsetY = 0,
+): Map<string, { x: number; y: number; width: number; height: number }> {
+  for (const child of node.children ?? []) {
+    const x = offsetX + (child.x ?? 0);
+    const y = offsetY + (child.y ?? 0);
+    map.set(child.id, { x, y, width: child.width ?? 0, height: child.height ?? 0 });
+    if (child.children?.length) buildElkPositionMap(child, map, x, y);
+  }
+  return map;
+}
+
+/**
+ * Patch edge sources/targets in the ELK input graph to use explicit cardinal
+ * port IDs for gateway endpoints, based on the relative centre-to-centre
+ * direction observed in the Pass-1 layout result.
+ *
+ * Port selection for a gateway SOURCE:
+ *   – target is above (dy < −¼ gateway height)  → __N
+ *   – target is below (dy > +¼ gateway height)  → __S
+ *   – target is to the right or same level       → __E
+ *   – target is to the left (back-edge/loop)     → __W
+ *
+ * Port selection for a gateway TARGET is symmetric: choose the port on the
+ * face the edge arrives from.
+ *
+ * The ¼-height threshold avoids changing near-horizontal edges to N/S while
+ * correctly routing genuinely upward/downward branches.
+ */
+function assignGatewayPortsFromLayout(
+  elkGraph: ElkNode,
+  layoutResult: ElkNode,
+  gatewayIds: Set<string>,
+): void {
+  const posMap = buildElkPositionMap(layoutResult);
+
+  function patch(node: ElkNode): void {
+    for (const edge of (node.edges ?? []) as ElkExtendedEdge[]) {
+      const rawSrc = edge.sources[0] ?? '';
+      const rawTgt = edge.targets[0] ?? '';
+      // Skip edges that already carry explicit port IDs (boundary-event ports).
+      if (rawSrc.includes('__') || rawTgt.includes('__')) continue;
+
+      const isSrcGw = gatewayIds.has(rawSrc);
+      const isTgtGw = gatewayIds.has(rawTgt);
+      if (!isSrcGw && !isTgtGw) continue;
+
+      const srcPos = posMap.get(rawSrc);
+      const tgtPos = posMap.get(rawTgt);
+      if (!srcPos || !tgtPos) continue;
+
+      const srcCx = srcPos.x + srcPos.width / 2;
+      const srcCy = srcPos.y + srcPos.height / 2;
+      const tgtCx = tgtPos.x + tgtPos.width / 2;
+      const tgtCy = tgtPos.y + tgtPos.height / 2;
+
+      if (isSrcGw) {
+        const dx = tgtCx - srcCx;
+        const dy = tgtCy - srcCy;
+        const thr = srcPos.height / 4;
+        let port: string;
+        if (dy < -thr) port = `${rawSrc}__N`;
+        else if (dy > thr) port = `${rawSrc}__S`;
+        else port = dx >= 0 ? `${rawSrc}__E` : `${rawSrc}__W`;
+        edge.sources = [port];
+      }
+
+      if (isTgtGw) {
+        // Approach direction: from source toward target.
+        const dx = srcCx - tgtCx;  // positive ⇒ source is to the right of target
+        const dy = srcCy - tgtCy;  // positive ⇒ source is below target
+        const thr = tgtPos.height / 4;
+        let port: string;
+        if (dy < -thr) port = `${rawTgt}__N`;  // source above → enters from top
+        else if (dy > thr) port = `${rawTgt}__S`;  // source below → enters from bottom
+        else port = dx >= 0 ? `${rawTgt}__E` : `${rawTgt}__W`;
+        edge.targets = [port];
+      }
+    }
+    for (const child of node.children ?? []) {
+      if (child.children?.length) patch(child);
+    }
+  }
+
+  patch(elkGraph);
 }
 
 // ─── element map ─────────────────────────────────────────────────────────────
@@ -472,6 +489,27 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
 
   for (const process of processes) {
     const elkGraph = buildElkGraph(process);
+
+    // Two-pass layout for processes that contain gateways:
+    //
+    // Pass 1 — let ELK auto-assign ports and establish rough node positions.
+    // Pass 2 — re-assign each gateway edge to the cardinal port (N/S/E/W) that
+    //           faces the connected node, then re-run ELK so it plans routes
+    //           from/to the exact diamond vertices.
+    //
+    // We clone the input for Pass 1 so ELK's internal mutations (if any) do not
+    // affect the graph we modify for Pass 2.
+    const gatewayIds = new Set<string>(
+      ((process.flowElements as any[]) ?? [])
+        .filter((e: any) => GATEWAY_TYPES.has(e.$type as string))
+        .map((e: any) => e.id as string),
+    );
+
+    if (gatewayIds.size > 0) {
+      const pass1 = await elk.layout(JSON.parse(JSON.stringify(elkGraph)) as ElkNode);
+      assignGatewayPortsFromLayout(elkGraph, pass1, gatewayIds);
+    }
+
     const laidOut = await elk.layout(elkGraph);
     const { shapes, edges } = collectShapesAndEdges(laidOut, moddle, elementMap, boundsMap);
     plane.planeElement.push(...shapes, ...edges);

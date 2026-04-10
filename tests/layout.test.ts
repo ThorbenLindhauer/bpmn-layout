@@ -144,6 +144,24 @@ function isOnDiamondBoundary(
   return Math.abs(val - 1) <= (tol + 1) / Math.min(halfW, halfH);
 }
 
+/**
+ * Returns true when `point` is at one of the 4 cardinal diamond tips of `bounds`:
+ * top (NORTH), bottom (SOUTH), right (EAST), or left (WEST) vertex.
+ */
+function isAtCardinalDiamondTip(
+  point: { x: number; y: number },
+  bounds: { x: number; y: number; width: number; height: number },
+  tol = 1,
+): boolean {
+  const cx = bounds.x + bounds.width / 2;
+  const cy = bounds.y + bounds.height / 2;
+  const isNorth = Math.abs(point.x - cx) <= tol && Math.abs(point.y - bounds.y) <= tol;
+  const isSouth = Math.abs(point.x - cx) <= tol && Math.abs(point.y - (bounds.y + bounds.height)) <= tol;
+  const isEast  = Math.abs(point.x - (bounds.x + bounds.width)) <= tol && Math.abs(point.y - cy) <= tol;
+  const isWest  = Math.abs(point.x - bounds.x) <= tol && Math.abs(point.y - cy) <= tol;
+  return isNorth || isSouth || isEast || isWest;
+}
+
 /** Dispatches to diamond or rectangle boundary check based on element type. */
 function isOnVisualBoundary(
   point: { x: number; y: number },
@@ -223,6 +241,76 @@ describe('sequence flow waypoints connect to shape boundaries', () => {
           `${edge.bpmnElement.id} last wp (${lastWp.x},${lastWp.y}) not on diamond of ${tgtId}`,
         ).toBe(true);
       }
+    }
+  });
+
+  it('gateway edge endpoints land at a cardinal diamond tip (N/S/E/W vertex)', async () => {
+    for (const fixtureName of ['gateway-connection.bpmn', 'parallel-gateway.bpmn']) {
+      const result = await layout(fixture(fixtureName));
+      const { shapes, edges } = await parseDi(result);
+      const infoById = Object.fromEntries(
+        shapes.map((s: any) => [s.bpmnElement.id, { bounds: s.bounds, type: s.bpmnElement.$type }]),
+      );
+
+      for (const edge of edges) {
+        const srcId = edge.bpmnElement.sourceRef?.id ?? edge.bpmnElement.sourceRef;
+        const tgtId = edge.bpmnElement.targetRef?.id ?? edge.bpmnElement.targetRef;
+
+        if (GATEWAY_ELEMENT_TYPES.has(infoById[srcId]?.type)) {
+          const firstWp = edge.waypoint[0];
+          expect(
+            isAtCardinalDiamondTip(firstWp, infoById[srcId].bounds),
+            `[${fixtureName}] ${edge.bpmnElement.id} first wp (${firstWp.x},${firstWp.y}) ` +
+            `is not at a cardinal tip of ${srcId} ` +
+            `(x:${infoById[srcId].bounds.x} y:${infoById[srcId].bounds.y} ` +
+            `w:${infoById[srcId].bounds.width} h:${infoById[srcId].bounds.height})`,
+          ).toBe(true);
+        }
+
+        if (GATEWAY_ELEMENT_TYPES.has(infoById[tgtId]?.type)) {
+          const lastWp = edge.waypoint[edge.waypoint.length - 1];
+          expect(
+            isAtCardinalDiamondTip(lastWp, infoById[tgtId].bounds),
+            `[${fixtureName}] ${edge.bpmnElement.id} last wp (${lastWp.x},${lastWp.y}) ` +
+            `is not at a cardinal tip of ${tgtId} ` +
+            `(x:${infoById[tgtId].bounds.x} y:${infoById[tgtId].bounds.y} ` +
+            `w:${infoById[tgtId].bounds.width} h:${infoById[tgtId].bounds.height})`,
+          ).toBe(true);
+        }
+      }
+    }
+  });
+});
+
+// ─── gateway port selection ───────────────────────────────────────────────────
+
+describe('gateway port selection', () => {
+  it('fork branches to tasks at different heights exit from different diamond tips', async () => {
+    const result = await layout(fixture('parallel-gateway.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+
+    // sf2: fork1 -> taskA,  sf3: fork1 -> taskB
+    const sf2 = edges.find((e: any) => e.bpmnElement.id === 'sf2')!;
+    const sf3 = edges.find((e: any) => e.bpmnElement.id === 'sf3')!;
+    expect(sf2, 'edge sf2 not found').toBeDefined();
+    expect(sf3, 'edge sf3 not found').toBeDefined();
+
+    const taskAY = byId['taskA'].y + byId['taskA'].height / 2;
+    const taskBY = byId['taskB'].y + byId['taskB'].height / 2;
+
+    // Only assert if ELK actually placed the two tasks at meaningfully different heights.
+    if (Math.abs(taskAY - taskBY) > 5) {
+      const sf2First = sf2.waypoint[0];
+      const sf3First = sf3.waypoint[0];
+      const sameExitPoint =
+        Math.abs(sf2First.x - sf3First.x) <= 1 &&
+        Math.abs(sf2First.y - sf3First.y) <= 1;
+      expect(
+        sameExitPoint,
+        `Both fork branches exit from the same point (${sf2First.x},${sf2First.y}) — ` +
+        `expected different tips for tasks at y=${taskAY} and y=${taskBY}`,
+      ).toBe(false);
     }
   });
 });
