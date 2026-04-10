@@ -347,6 +347,40 @@ describe('multiple boundary events', () => {
   });
 });
 
+// ─── edge orthogonality ──────────────────────────────────────────────────────
+
+describe('edge orthogonality', () => {
+  const ALL_FIXTURES = [
+    'simple-linear.bpmn',
+    'parallel-gateway.bpmn',
+    'gateway-connection.bpmn',
+    'loop.bpmn',
+    'boundary-event.bpmn',
+    'multi-boundary-event.bpmn',
+  ];
+
+  it('every waypoint segment is axis-aligned (horizontal or vertical)', async () => {
+    for (const name of ALL_FIXTURES) {
+      const result = await layout(fixture(name));
+      const { edges } = await parseDi(result);
+      for (const edge of edges) {
+        const wps: Array<{ x: number; y: number }> = edge.waypoint;
+        for (let i = 0; i < wps.length - 1; i++) {
+          const a = wps[i];
+          const b = wps[i + 1];
+          const isH = Math.abs(a.y - b.y) <= 1;
+          const isV = Math.abs(a.x - b.x) <= 1;
+          expect(
+            isH || isV,
+            `[${name}] edge ${edge.bpmnElement.id} segment ${i}→${i + 1}: ` +
+            `(${a.x},${a.y})→(${b.x},${b.y}) is not axis-aligned`,
+          ).toBe(true);
+        }
+      }
+    }
+  });
+});
+
 // ─── loop (cyclic graph) ─────────────────────────────────────────────────────
 
 describe('loop (cyclic graph)', () => {
