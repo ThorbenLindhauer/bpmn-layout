@@ -259,14 +259,19 @@ function collectShapesAndEdges(
   return { shapes, edges };
 }
 
-// ─── waypoint snapping ───────────────────────────────────────────────────────
+// ─── visual boundary geometry ─────────────────────────────────────────────────
+
+/** BPMN element types that render as a diamond (rhombus) rather than a rectangle. */
+const GATEWAY_TYPES = new Set([
+  'bpmn:ExclusiveGateway', 'bpmn:ParallelGateway', 'bpmn:InclusiveGateway',
+  'bpmn:EventBasedGateway', 'bpmn:ComplexGateway',
+]);
 
 /**
- * Find the point on the boundary of `bounds` that lies on the ray from the
- * bounds centre toward `from`.  Used to snap edge waypoints from the zero-size
- * port centre to the edge of the rendered (36 × 36) boundary-event shape.
+ * Point on the **rectangle** boundary of `bounds` in the direction from the
+ * centre toward `from`.
  */
-function boundaryPoint(
+function rectangleBoundaryPoint(
   from: { x: number; y: number },
   bounds: Bounds,
 ): { x: number; y: number } {
@@ -274,26 +279,66 @@ function boundaryPoint(
   const cy = bounds.y + bounds.height / 2;
   const dx = from.x - cx;
   const dy = from.y - cy;
-
   if (dx === 0 && dy === 0) return { x: cx, y: bounds.y };
-
   const halfW = bounds.width / 2;
   const halfH = bounds.height / 2;
   const s = Math.min(halfW / Math.abs(dx), halfH / Math.abs(dy));
-
   return { x: Math.round(cx + dx * s), y: Math.round(cy + dy * s) };
 }
 
 /**
- * ELK connects edges to zero-size ports at their centre point, but the
- * rendered boundary-event shape is 36 × 36.  Snap the first waypoint of
- * BE-sourced edges (and last waypoint of BE-targeted edges) to the actual
- * shape boundary so the arrow visually touches the circle.
+ * Point on the **diamond** boundary of `bounds` in the direction from the
+ * centre toward `from`.
+ *
+ * The diamond has vertices at the midpoints of each bounding-box edge.
+ * Its boundary satisfies |ΔX / halfW| + |ΔY / halfH| = 1.
  */
-function snapBoundaryEventWaypoints(
+function diamondBoundaryPoint(
+  from: { x: number; y: number },
+  bounds: Bounds,
+): { x: number; y: number } {
+  const cx = bounds.x + bounds.width / 2;
+  const cy = bounds.y + bounds.height / 2;
+  const dx = from.x - cx;
+  const dy = from.y - cy;
+  if (dx === 0 && dy === 0) return { x: bounds.x, y: cy };
+  const halfW = bounds.width / 2;
+  const halfH = bounds.height / 2;
+  // t such that |t·dx/halfW| + |t·dy/halfH| = 1  →  t = 1 / (|dx|/halfW + |dy|/halfH)
+  const t = 1 / (Math.abs(dx) / halfW + Math.abs(dy) / halfH);
+  return { x: Math.round(cx + dx * t), y: Math.round(cy + dy * t) };
+}
+
+/** Dispatch to the correct boundary calculation based on element type. */
+function visualBoundaryPoint(
+  from: { x: number; y: number },
+  elementType: string,
+  bounds: Bounds,
+): { x: number; y: number } {
+  return GATEWAY_TYPES.has(elementType)
+    ? diamondBoundaryPoint(from, bounds)
+    : rectangleBoundaryPoint(from, bounds);
+}
+
+// ─── waypoint snapping ────────────────────────────────────────────────────────
+
+/**
+ * Post-process all BPMNEdge waypoints so that the first and last points
+ * lie on the *visual* boundary of their source/target shapes:
+ *
+ *  - Gateways render as diamonds → use diamond boundary formula.
+ *  - Boundary events are zero-size ELK ports; their rendered 36×36 circle
+ *    needs the rectangle snap (the centre is already on the host boundary).
+ *  - All other shapes (tasks, events) are rectangles → use rectangle snap.
+ *
+ * ELK already produces correct rectangle-boundary waypoints for rectangular
+ * shapes, so the snap is effectively a no-op for them.  For gateways the
+ * snap moves the endpoint from the bounding-box face to the diamond face.
+ */
+function snapConnectionEndpoints(
   plane: any,
   boundsMap: Map<string, Bounds>,
-  boundaryEventIds: Set<string>,
+  elementMap: Map<string, any>,
   moddle: BpmnModdle,
 ): void {
   for (const el of plane.planeElement) {
@@ -304,18 +349,24 @@ function snapBoundaryEventWaypoints(
     const srcId: string | undefined = el.bpmnElement.sourceRef?.id;
     const tgtId: string | undefined = el.bpmnElement.targetRef?.id;
 
-    if (srcId && boundaryEventIds.has(srcId)) {
-      const beBounds = boundsMap.get(srcId);
-      if (beBounds) {
-        const snapped = boundaryPoint({ x: wps[1].x, y: wps[1].y }, beBounds);
+    if (srcId) {
+      const srcBounds = boundsMap.get(srcId);
+      const srcType: string | undefined = elementMap.get(srcId)?.$type;
+      if (srcBounds && srcType) {
+        const snapped = visualBoundaryPoint({ x: wps[1].x, y: wps[1].y }, srcType, srcBounds);
         wps[0] = (moddle as any).create('dc:Point', snapped);
       }
     }
 
-    if (tgtId && boundaryEventIds.has(tgtId)) {
-      const beBounds = boundsMap.get(tgtId);
-      if (beBounds) {
-        const snapped = boundaryPoint({ x: wps[wps.length - 2].x, y: wps[wps.length - 2].y }, beBounds);
+    if (tgtId) {
+      const tgtBounds = boundsMap.get(tgtId);
+      const tgtType: string | undefined = elementMap.get(tgtId)?.$type;
+      if (tgtBounds && tgtType) {
+        const snapped = visualBoundaryPoint(
+          { x: wps[wps.length - 2].x, y: wps[wps.length - 2].y },
+          tgtType,
+          tgtBounds,
+        );
         wps[wps.length - 1] = (moddle as any).create('dc:Point', snapped);
       }
     }
@@ -365,23 +416,16 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
 
   const boundsMap = new Map<string, Bounds>();
 
-  // Collect boundary-event IDs across all processes for waypoint snapping
-  const allBoundaryEventIds = new Set<string>();
-
   for (const process of processes) {
-    // Collect boundary event IDs
-    for (const el of (process.flowElements ?? []) as any[]) {
-      if (el.$type === 'bpmn:BoundaryEvent') allBoundaryEventIds.add(el.id as string);
-    }
-
     const elkGraph = buildElkGraph(process);
     const laidOut = await elk.layout(elkGraph);
     const { shapes, edges } = collectShapesAndEdges(laidOut, moddle, elementMap, boundsMap);
     plane.planeElement.push(...shapes, ...edges);
   }
 
-  // Snap edge waypoints from port centres to the rendered BE shape boundary
-  snapBoundaryEventWaypoints(plane, boundsMap, allBoundaryEventIds, moddle);
+  // Snap edge endpoints to the visual boundary of source/target shapes.
+  // Gateways use diamond geometry; all other shapes use rectangle geometry.
+  snapConnectionEndpoints(plane, boundsMap, elementMap, moddle);
 
   const { xml } = await (moddle as any).toXML(definitions, { format: true });
   return xml as string;
