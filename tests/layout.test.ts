@@ -469,6 +469,29 @@ describe('edge orthogonality', () => {
   });
 });
 
+// ─── label preservation ───────────────────────────────────────────────────────
+
+describe('label preservation', () => {
+  it('shape label moves by the same delta as the shape', async () => {
+    const result = await layout(fixture('labeled-shape.bpmn'));
+    const { shapes } = await parseDi(result);
+    const task1Shape = shapes.find((s: any) => s.bpmnElement.id === 'task1');
+    expect(task1Shape, 'shape for task1 not found').toBeDefined();
+    expect(task1Shape.label?.bounds, 'label bounds missing on task1').toBeDefined();
+    // Original offset of label from shape origin: (158-150, 198-110) = (8, 88)
+    expect(task1Shape.label.bounds.x - task1Shape.bounds.x).toBe(8);
+    expect(task1Shape.label.bounds.y - task1Shape.bounds.y).toBe(88);
+  });
+
+  it('edge label bounds are cleared after re-routing', async () => {
+    const result = await layout(fixture('labeled-shape.bpmn'));
+    const { edges } = await parseDi(result);
+    const sf1Edge = edges.find((e: any) => e.bpmnElement.id === 'sf1');
+    expect(sf1Edge, 'edge sf1 not found').toBeDefined();
+    expect(sf1Edge.label?.bounds).toBeUndefined();
+  });
+});
+
 // ─── collapsed subprocess ─────────────────────────────────────────────────────
 
 describe('collapsed subprocess', () => {
