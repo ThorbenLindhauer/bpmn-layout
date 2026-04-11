@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+             xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+             id="collapsed-subprocess" targetNamespace="http://bpmn.io/schema/bpmn">
+  <process id="process1" isExecutable="false">
+    <startEvent id="start1" name="Start"/>
+    <subProcess id="sub1" name="Collapsed Sub">
+      <startEvent id="innerStart" name="Inner Start"/>
+      <task id="innerTask" name="Inner Task"/>
+      <endEvent id="innerEnd" name="Inner End"/>
+      <sequenceFlow id="innerSf1" sourceRef="innerStart" targetRef="innerTask"/>
+      <sequenceFlow id="innerSf2" sourceRef="innerTask" targetRef="innerEnd"/>
+    </subProcess>
+    <endEvent id="end1" name="End"/>
+    <sequenceFlow id="sf1" sourceRef="start1" targetRef="sub1"/>
+    <sequenceFlow id="sf2" sourceRef="sub1" targetRef="end1"/>
+  </process>
+  <bpmndi:BPMNDiagram id="diagram1">
+    <bpmndi:BPMNPlane id="plane1" bpmnElement="process1">
+      <bpmndi:BPMNShape id="start1_di" bpmnElement="start1">
+        <dc:Bounds x="100" y="118" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="sub1_di" bpmnElement="sub1" isExpanded="false">
+        <dc:Bounds x="200" y="80" width="100" height="80"/>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end1_di" bpmnElement="end1">
+        <dc:Bounds x="360" y="118" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</definitions>

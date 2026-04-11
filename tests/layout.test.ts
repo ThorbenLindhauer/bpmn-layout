@@ -381,6 +381,46 @@ describe('edge orthogonality', () => {
   });
 });
 
+// ─── collapsed subprocess ─────────────────────────────────────────────────────
+
+describe('collapsed subprocess', () => {
+  it('the collapsed subprocess shape has isExpanded === false', async () => {
+    const result = await layout(fixture('collapsed-subprocess.bpmn'));
+    const { shapes } = await parseDi(result);
+    const sub1Shape = shapes.find((s: any) => s.bpmnElement.id === 'sub1');
+    expect(sub1Shape, 'shape for sub1 not found').toBeDefined();
+    expect(sub1Shape.isExpanded).toBe(false);
+  });
+
+  it('internal elements of the collapsed subprocess have no shapes in the output', async () => {
+    const result = await layout(fixture('collapsed-subprocess.bpmn'));
+    const { shapes } = await parseDi(result);
+    const ids = shapes.map((s: any) => s.bpmnElement.id);
+    expect(ids).not.toContain('innerStart');
+    expect(ids).not.toContain('innerTask');
+    expect(ids).not.toContain('innerEnd');
+  });
+
+  it('process-level elements are laid out left-to-right: start1 < sub1 < end1', async () => {
+    const result = await layout(fixture('collapsed-subprocess.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    expect(byId['start1']).toBeDefined();
+    expect(byId['sub1']).toBeDefined();
+    expect(byId['end1']).toBeDefined();
+    expect(byId['start1'].x).toBeLessThan(byId['sub1'].x);
+    expect(byId['sub1'].x).toBeLessThan(byId['end1'].x);
+  });
+
+  it('the collapsed subprocess uses compact size (100×80)', async () => {
+    const result = await layout(fixture('collapsed-subprocess.bpmn'));
+    const { shapes } = await parseDi(result);
+    const sub1Shape = shapes.find((s: any) => s.bpmnElement.id === 'sub1');
+    expect(sub1Shape.bounds.width).toBe(100);
+    expect(sub1Shape.bounds.height).toBe(80);
+  });
+});
+
 // ─── loop (cyclic graph) ─────────────────────────────────────────────────────
 
 describe('loop (cyclic graph)', () => {
