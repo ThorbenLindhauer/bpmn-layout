@@ -195,8 +195,8 @@ function collectShapesAndEdges(
     const element = elementMap.get(child.id);
     if (!element) continue;
 
-    const absX = offsetX + (child.x ?? 0);
-    const absY = offsetY + (child.y ?? 0);
+    const absX = Math.round(offsetX + (child.x ?? 0));
+    const absY = Math.round(offsetY + (child.y ?? 0));
     const w = child.width ?? sizeOf(element).width;
     const h = child.height ?? sizeOf(element).height;
 
@@ -282,7 +282,7 @@ function collectShapesAndEdges(
     if (!element) continue;
 
     const waypoints = extractWaypoints(edge as ElkExtendedEdge).map((p) =>
-      (moddle as any).create('dc:Point', { x: offsetX + p.x, y: offsetY + p.y }),
+      (moddle as any).create('dc:Point', { x: Math.round(offsetX + p.x), y: Math.round(offsetY + p.y) }),
     );
 
     const existingEdge = existingEdges.get(edge.id);
@@ -351,21 +351,31 @@ function collinear(
 
 /**
  * Snap a gateway source/target endpoint to the correct cardinal diamond vertex
- * and insert an orthogonal elbow waypoint if the vertex doesn't share an axis
- * with the adjacent bend point.
+ * and fix the adjacent waypoints so all segments remain axis-aligned.
  *
  * ELK routes edges to the *bounding-box* face of gateways and may spread
  * multiple connections across the face at different offsets from the centre.
- * Simply moving the endpoint to the diamond surface while leaving the rest of
+ * Simply moving the endpoint to the diamond vertex while leaving the rest of
  * the path unchanged creates a diagonal first (or last) segment.
  *
- * The fix: choose the cardinal vertex (right/left/top/bottom tip of the
- * diamond) whose side the adjacent waypoint is approaching from, then insert
- * an elbow point so the path stays fully rectilinear.
+ * Strategy: choose the cardinal vertex (right/left/top/bottom tip of the
+ * diamond) based on which side adj approaches from.  Then:
  *
- * The entry/exit side is determined by comparing the adjacent waypoint to the
- * gateway **centre** — not to the original ELK endpoint — so that a prior
- * elbow insertion for the opposite end does not confuse the direction.
+ *  - If adj already shares the exit axis with vertex (needsElbow = false):
+ *    return — the path is already rectilinear.
+ *
+ *  - Otherwise (needsElbow = true): ELK placed adj in a "routing column"
+ *    (consecutive waypoints that share adj's perpendicular coordinate, i.e.
+ *    the same x for a horizontal exit or the same y for a vertical exit).
+ *    Collapse the entire column to the diamond vertex coordinate.  This
+ *    removes the short horizontal/vertical stub ELK inserts near the bbox
+ *    face and yields a clean path directly from the diamond tip.
+ *
+ *    If the column cannot be safely collapsed (e.g. it reaches the opposite
+ *    endpoint), fall back to inserting an orthogonal elbow point.
+ *
+ * The entry/exit side is determined by comparing adj to the gateway centre
+ * so that a prior snapping of the other endpoint doesn't confuse direction.
  */
 function snapGatewayEndpoint(
   wps: any[],
@@ -383,8 +393,8 @@ function snapGatewayEndpoint(
   const adj = wps[adjIdx];
 
   // Use adj's offset from the gateway centre to choose which diamond vertex
-  // the edge connects to.  This is robust even when a prior elbow insertion
-  // for the other endpoint changes the last/first segment direction.
+  // the edge connects to.  This is robust even when a prior snapping of the
+  // other endpoint changes the last/first segment direction.
   const horizontal = Math.abs(adj.x - cx) > Math.abs(adj.y - cy);
 
   const vertex = horizontal
@@ -393,14 +403,87 @@ function snapGatewayEndpoint(
 
   wps[epIdx] = (moddle as any).create('dc:Point', vertex);
 
-  // Insert an elbow between vertex and adj when they don't already share the
-  // appropriate axis-aligned coordinate.
+  // If adj already shares the exit-axis coordinate with vertex the path is
+  // already rectilinear — nothing more to do.
   const needsElbow = horizontal
     ? Math.abs(vertex.y - adj.y) > 0.5
     : Math.abs(vertex.x - adj.x) > 0.5;
 
   if (!needsElbow) return;
 
+  // ── column-collapse approach ──────────────────────────────────────────────
+  //
+  // ELK often places the adjacent waypoint (adj) in a "routing column":
+  // consecutive waypoints that all share adj's perpendicular coordinate
+  // (same x for a horizontal exit, same y for a vertical exit).  Collapsing
+  // this entire column to the diamond vertex coordinate eliminates the short
+  // stub ELK inserts near the bounding-box face.
+  //
+  // Safety requirement: the segment that leads *into* the column (for target)
+  // or *out of* the column (for source) must be parallel to the exit direction
+  // (i.e. horizontal for a horizontal exit) so the collapsed path stays
+  // rectilinear.  If this doesn't hold, fall back to elbow insertion.
+
+  // The "column coordinate" is adj.x (horizontal exit) or adj.y (vertical).
+  const colCoord = horizontal ? adj.x : adj.y;
+
+  function sameColCoord(p: any): boolean {
+    return horizontal ? Math.abs(p.x - colCoord) < 0.5 : Math.abs(p.y - colCoord) < 0.5;
+  }
+  function moveToVertex(p: any): any {
+    return (moddle as any).create('dc:Point', horizontal
+      ? { x: vertex.x, y: p.y }
+      : { x: p.x, y: vertex.y });
+  }
+  function parallelToExit(a: any, b: any): boolean {
+    // Segment a→b is parallel to the exit direction?
+    return horizontal ? Math.abs(a.y - b.y) < 0.5 : Math.abs(a.x - b.x) < 0.5;
+  }
+
+  if (isSource) {
+    // Extend the column forward (toward the target) starting from adj.
+    let colEnd = adjIdx;
+    while (colEnd + 1 < wps.length - 1 && sameColCoord(wps[colEnd + 1])) {
+      colEnd++;
+    }
+    // The segment leaving the column must be parallel (→ stays rectilinear).
+    if (colEnd < wps.length - 1 && parallelToExit(wps[colEnd], wps[colEnd + 1])) {
+      for (let i = adjIdx; i <= colEnd; i++) {
+        wps[i] = moveToVertex(wps[i]);
+      }
+      // Remove any points that became collinear after the move.
+      for (let i = colEnd; i >= adjIdx; i--) {
+        if (wps[i - 1] && wps[i + 1] && collinear(wps[i - 1], wps[i], wps[i + 1])) {
+          wps.splice(i, 1);
+        }
+      }
+      return;
+    }
+  } else {
+    // Extend the column backward (toward the source) starting from adj.
+    let colStart = adjIdx;
+    while (colStart - 1 > 0 && sameColCoord(wps[colStart - 1])) {
+      colStart--;
+    }
+    // The segment entering the column must be parallel (→ stays rectilinear).
+    if (colStart > 0 && parallelToExit(wps[colStart - 1], wps[colStart])) {
+      for (let i = colStart; i <= adjIdx; i++) {
+        wps[i] = moveToVertex(wps[i]);
+      }
+      for (let i = adjIdx; i >= colStart; i--) {
+        if (wps[i - 1] && wps[i + 1] && collinear(wps[i - 1], wps[i], wps[i + 1])) {
+          wps.splice(i, 1);
+        }
+      }
+      return;
+    }
+  }
+
+  // ── fallback: elbow insertion ─────────────────────────────────────────────
+  //
+  // Column collapse wasn't applicable; insert an orthogonal elbow point so
+  // the path from vertex to adj becomes rectilinear.
+  //
   // For H exits/entries the elbow sits at (adj.x, vertex.y): go horizontal
   // along the diamond axis first, then turn vertically toward adj.y.
   // For V exits/entries: (vertex.x, adj.y).

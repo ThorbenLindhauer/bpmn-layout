@@ -95,6 +95,37 @@ describe('parallel gateway', () => {
     const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
     expect(byId['taskA'].y).not.toEqual(byId['taskB'].y);
   });
+
+  it('all waypoint coordinates are integers (no fractional positions)', async () => {
+    const result = await layout(fixture('parallel-gateway.bpmn'));
+    const { edges } = await parseDi(result);
+    for (const edge of edges) {
+      for (const wp of edge.waypoint as Array<{ x: number; y: number }>) {
+        expect(
+          Number.isInteger(wp.x) && Number.isInteger(wp.y),
+          `waypoint (${wp.x},${wp.y}) on ${edge.bpmnElement.id} has fractional coordinates`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('gateway fan-out edge (sf2: fork1→taskA) has no redundant stub waypoints', async () => {
+    const result = await layout(fixture('parallel-gateway.bpmn'));
+    const { edges } = await parseDi(result);
+    const sf2 = edges.find((e: any) => e.bpmnElement.id === 'sf2');
+    expect(sf2, 'sf2 not found').toBeDefined();
+    // After column-collapse the path fork1-right-vertex → taskA should have
+    // exactly 3 waypoints: vertex → bend → taskA entry.
+    expect(sf2.waypoint.length).toBe(3);
+  });
+
+  it('gateway fan-in edge (sf4: taskA→join1) has no redundant stub waypoints', async () => {
+    const result = await layout(fixture('parallel-gateway.bpmn'));
+    const { edges } = await parseDi(result);
+    const sf4 = edges.find((e: any) => e.bpmnElement.id === 'sf4');
+    expect(sf4, 'sf4 not found').toBeDefined();
+    expect(sf4.waypoint.length).toBe(3);
+  });
 });
 
 // ─── waypoint boundary connection ────────────────────────────────────────────
