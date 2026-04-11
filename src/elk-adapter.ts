@@ -65,7 +65,6 @@ const ELK_LAYOUT_OPTIONS = {
   'elk.spacing.nodeNode': '30',
   'elk.edgeRouting': 'ORTHOGONAL',
   'elk.layered.unnecessaryBendpoints': 'true',
-  'elk.layered.nodePlacement.favorStraightEdges': 'true',
 };
 
 // ─── ELK graph building ───────────────────────────────────────────────────────
@@ -349,6 +348,102 @@ function snapConnectionEndpoints(
   }
 }
 
+// ─── N/S gateway path reconstruction ─────────────────────────────────────────
+
+/**
+ * For gateway edges whose connected element sits strictly above or below the
+ * gateway, ELK (direction RIGHT) still exits from the EAST/WEST port and bends
+ * around the diamond, producing 2–3 extra waypoints.  This post-processor
+ * replaces those paths with a clean 1-bend L-shape that starts/ends at the
+ * correct cardinal diamond tip (NORTH or SOUTH).
+ *
+ * Edges connecting two gateways are skipped — they are handled by ELK's
+ * EAST/WEST assignment, which already gives a clean path in normal layouts.
+ */
+function rebuildGatewayEdgePaths(
+  plane: any,
+  boundsMap: Map<string, Bounds>,
+  elementMap: Map<string, any>,
+  moddle: BpmnModdle,
+): void {
+  function makePt(x: number, y: number) {
+    return (moddle as any).create('dc:Point', { x, y });
+  }
+
+  for (const el of plane.planeElement) {
+    if (el.$type !== 'bpmndi:BPMNEdge') continue;
+    const wps: any[] = el.waypoint;
+    if (wps.length < 2) continue;
+
+    const srcId: string | undefined = el.bpmnElement.sourceRef?.id;
+    const tgtId: string | undefined = el.bpmnElement.targetRef?.id;
+    const src = srcId ? elementMap.get(srcId) : undefined;
+    const tgt = tgtId ? elementMap.get(tgtId) : undefined;
+
+    // Skip gateway-to-gateway edges — EAST/WEST path is already clean.
+    if (src && GATEWAY_TYPES.has(src.$type as string) &&
+        tgt && GATEWAY_TYPES.has(tgt.$type as string)) continue;
+
+    // ── outgoing from gateway ────────────────────────────────────────────────
+    if (src && GATEWAY_TYPES.has(src.$type as string)) {
+      const gwB = boundsMap.get(srcId!);
+      const tgtB = tgtId ? boundsMap.get(tgtId) : undefined;
+      if (gwB && tgtB) {
+        const gwCx  = gwB.x + gwB.width / 2;
+        const gwY   = gwB.y;
+        const gwBot = gwB.y + gwB.height;
+        const tgtCy = tgtB.y + tgtB.height / 2;
+        // Last waypoint is already on the target boundary — keep it as the far end.
+        const farEnd = wps[wps.length - 1];
+
+        if (tgtCy <= gwY) {
+          // Target above → exit from NORTH tip, go up then across.
+          const tip = makePt(gwCx, gwY);
+          el.waypoint = Math.abs(farEnd.y - gwY) <= 0.5
+            ? [tip, farEnd]
+            : [tip, makePt(gwCx, farEnd.y), farEnd];
+        } else if (tgtCy >= gwBot) {
+          // Target below → exit from SOUTH tip, go down then across.
+          const tip = makePt(gwCx, gwBot);
+          el.waypoint = Math.abs(farEnd.y - gwBot) <= 0.5
+            ? [tip, farEnd]
+            : [tip, makePt(gwCx, farEnd.y), farEnd];
+        }
+        // else: target at same height → EAST/WEST path already correct.
+      }
+    }
+
+    // ── incoming to gateway ──────────────────────────────────────────────────
+    if (tgt && GATEWAY_TYPES.has(tgt.$type as string)) {
+      const gwB = boundsMap.get(tgtId!);
+      const srcB = srcId ? boundsMap.get(srcId) : undefined;
+      if (gwB && srcB) {
+        const gwCx  = gwB.x + gwB.width / 2;
+        const gwY   = gwB.y;
+        const gwBot = gwB.y + gwB.height;
+        const srcCy = srcB.y + srcB.height / 2;
+        // First waypoint is already on the source boundary — keep it as the far end.
+        const farEnd = wps[0];
+
+        if (srcCy <= gwY) {
+          // Source above → enter NORTH tip, path comes across then down.
+          const tip = makePt(gwCx, gwY);
+          el.waypoint = Math.abs(farEnd.y - gwY) <= 0.5
+            ? [farEnd, tip]
+            : [farEnd, makePt(gwCx, farEnd.y), tip];
+        } else if (srcCy >= gwBot) {
+          // Source below → enter SOUTH tip, path comes across then up.
+          const tip = makePt(gwCx, gwBot);
+          el.waypoint = Math.abs(farEnd.y - gwBot) <= 0.5
+            ? [farEnd, tip]
+            : [farEnd, makePt(gwCx, farEnd.y), tip];
+        }
+        // else: source at same height → EAST/WEST path already correct.
+      }
+    }
+  }
+}
+
 // ─── two-pass gateway port assignment ────────────────────────────────────────
 
 /**
@@ -370,21 +465,15 @@ function buildElkPositionMap(
 }
 
 /**
- * Patch edge sources/targets in the ELK input graph to use explicit cardinal
- * port IDs for gateway endpoints, based on the relative centre-to-centre
- * direction observed in the Pass-1 layout result.
+ * Patch edge sources/targets in the ELK input graph to use explicit EAST or
+ * WEST port IDs for gateway endpoints, based on the relative x-direction
+ * observed in the Pass-1 layout result.
  *
- * Port selection for a gateway SOURCE:
- *   – target is above (dy < −¼ gateway height)  → __N
- *   – target is below (dy > +¼ gateway height)  → __S
- *   – target is to the right or same level       → __E
- *   – target is to the left (back-edge/loop)     → __W
- *
- * Port selection for a gateway TARGET is symmetric: choose the port on the
- * face the edge arrives from.
- *
- * The ¼-height threshold avoids changing near-horizontal edges to N/S while
- * correctly routing genuinely upward/downward branches.
+ * NORTH/SOUTH routing for genuinely upward/downward connections is handled
+ * separately in `rebuildGatewayEdgePaths` after ELK has produced final layout
+ * coordinates.  Keeping only E/W here avoids ELK's "north-south dummy node"
+ * processing, which can add extra segments in a direction-RIGHT layout and
+ * also causes `favorStraightEdges` to shift gateways off the main flow axis.
  */
 function assignGatewayPortsFromLayout(
   elkGraph: ElkNode,
@@ -409,31 +498,16 @@ function assignGatewayPortsFromLayout(
       if (!srcPos || !tgtPos) continue;
 
       const srcCx = srcPos.x + srcPos.width / 2;
-      const srcCy = srcPos.y + srcPos.height / 2;
       const tgtCx = tgtPos.x + tgtPos.width / 2;
-      const tgtCy = tgtPos.y + tgtPos.height / 2;
 
       if (isSrcGw) {
-        const dx = tgtCx - srcCx;
-        const dy = tgtCy - srcCy;
-        const thr = srcPos.height / 4;
-        let port: string;
-        if (dy < -thr) port = `${rawSrc}__N`;
-        else if (dy > thr) port = `${rawSrc}__S`;
-        else port = dx >= 0 ? `${rawSrc}__E` : `${rawSrc}__W`;
-        edge.sources = [port];
+        edge.sources = [tgtCx >= srcCx ? `${rawSrc}__E` : `${rawSrc}__W`];
       }
 
       if (isTgtGw) {
-        // Approach direction: from source toward target.
-        const dx = srcCx - tgtCx;  // positive ⇒ source is to the right of target
-        const dy = srcCy - tgtCy;  // positive ⇒ source is below target
-        const thr = tgtPos.height / 4;
-        let port: string;
-        if (dy < -thr) port = `${rawTgt}__N`;  // source above → enters from top
-        else if (dy > thr) port = `${rawTgt}__S`;  // source below → enters from bottom
-        else port = dx >= 0 ? `${rawTgt}__E` : `${rawTgt}__W`;
-        edge.targets = [port];
+        // Approach direction: positive dx ⇒ source is to the right of target.
+        const dx = srcCx - tgtCx;
+        edge.targets = [dx >= 0 ? `${rawTgt}__E` : `${rawTgt}__W`];
       }
     }
     for (const child of node.children ?? []) {
@@ -518,6 +592,11 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
   // Snap edge endpoints to the visual boundary of source/target shapes.
   // Gateways use diamond geometry; all other shapes use rectangle geometry.
   snapConnectionEndpoints(plane, boundsMap, elementMap, moddle);
+
+  // For gateway edges connecting to elements strictly above/below the gateway,
+  // replace ELK's multi-segment EAST-exit path with a clean 1-bend L-shape from
+  // the correct NORTH or SOUTH diamond tip.
+  rebuildGatewayEdgePaths(plane, boundsMap, elementMap, moddle);
 
   const { xml } = await (moddle as any).toXML(definitions, { format: true });
   return xml as string;
