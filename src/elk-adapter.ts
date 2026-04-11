@@ -205,7 +205,15 @@ function collectShapesAndEdges(
     const newBounds = (moddle as any).create('dc:Bounds', { x: absX, y: absY, width: w, height: h });
     const existingShape = existingShapes.get(child.id);
     if (existingShape) {
+      const dx = absX - (existingShape.bounds?.x ?? absX);
+      const dy = absY - (existingShape.bounds?.y ?? absY);
       existingShape.bounds = newBounds;
+      if (existingShape.label?.bounds) {
+        const lb = existingShape.label.bounds;
+        existingShape.label.bounds = (moddle as any).create('dc:Bounds', {
+          x: lb.x + dx, y: lb.y + dy, width: lb.width, height: lb.height,
+        });
+      }
       shapes.push(existingShape);
     } else {
       shapes.push(
@@ -240,7 +248,15 @@ function collectShapesAndEdges(
 
       const existingPortShape = existingShapes.get(port.id as string);
       if (existingPortShape) {
+        const dpx = beBounds.x - (existingPortShape.bounds?.x ?? beBounds.x);
+        const dpy = beBounds.y - (existingPortShape.bounds?.y ?? beBounds.y);
         existingPortShape.bounds = (moddle as any).create('dc:Bounds', beBounds);
+        if (existingPortShape.label?.bounds) {
+          const lb = existingPortShape.label.bounds;
+          existingPortShape.label.bounds = (moddle as any).create('dc:Bounds', {
+            x: lb.x + dpx, y: lb.y + dpy, width: lb.width, height: lb.height,
+          });
+        }
         shapes.push(existingPortShape);
       } else {
         shapes.push(
@@ -272,6 +288,11 @@ function collectShapesAndEdges(
     const existingEdge = existingEdges.get(edge.id);
     if (existingEdge) {
       existingEdge.waypoint = waypoints;
+      // The edge path is completely re-routed, so any absolute label position
+      // is now stale. Clear it so tools auto-position the label on the new path.
+      if (existingEdge.label?.bounds) {
+        existingEdge.label.bounds = undefined;
+      }
       edges.push(existingEdge);
     } else {
       edges.push(
