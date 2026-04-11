@@ -351,14 +351,53 @@ function snapConnectionEndpoints(
 // ─── N/S gateway path reconstruction ─────────────────────────────────────────
 
 /**
+ * Returns true if the axis-aligned segment would pass through the interior of
+ * any element in boundsMap (excluding elements in `skip`).
+ *
+ * isHorizontal  true  → segment is y=fixed, x ∈ [lo, hi]
+ *               false → segment is x=fixed, y ∈ [lo, hi]
+ *
+ * margin: each bounding-box is inset by this many pixels before testing,
+ * preventing false positives when a path merely touches a shared boundary.
+ */
+function segmentCrossesAnyElement(
+  isHorizontal: boolean,
+  fixed: number,
+  lo: number,
+  hi: number,
+  skip: Set<string>,
+  boundsMap: Map<string, Bounds>,
+  margin = 2,
+): boolean {
+  for (const [id, box] of boundsMap) {
+    if (skip.has(id)) continue;
+    const bx0 = box.x + margin;
+    const bx1 = box.x + box.width - margin;
+    const by0 = box.y + margin;
+    const by1 = box.y + box.height - margin;
+    if (bx1 <= bx0 || by1 <= by0) continue; // box collapses after margin shrink
+    if (isHorizontal) {
+      if (fixed > by0 && fixed < by1 && lo < bx1 && hi > bx0) return true;
+    } else {
+      if (fixed > bx0 && fixed < bx1 && lo < by1 && hi > by0) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * For gateway edges whose connected element sits strictly above or below the
  * gateway, ELK (direction RIGHT) still exits from the EAST/WEST port and bends
  * around the diamond, producing 2–3 extra waypoints.  This post-processor
  * replaces those paths with a clean 1-bend L-shape that starts/ends at the
  * correct cardinal diamond tip (NORTH or SOUTH).
  *
- * Edges connecting two gateways are skipped — they are handled by ELK's
- * EAST/WEST assignment, which already gives a clean path in normal layouts.
+ * The rebuild is skipped for an edge if either segment of the proposed L-shape
+ * would pass through the interior of another diagram element — in that case
+ * ELK's original routing (which avoids the obstacle) is preserved as-is.
+ *
+ * Edges connecting two gateways are always skipped — EAST/WEST routing already
+ * gives a clean path in normal layouts.
  */
 function rebuildGatewayEdgePaths(
   plane: any,
@@ -396,18 +435,24 @@ function rebuildGatewayEdgePaths(
         // Last waypoint is already on the target boundary — keep it as the far end.
         const farEnd = wps[wps.length - 1];
 
-        if (tgtCy <= gwY) {
-          // Target above → exit from NORTH tip, go up then across.
-          const tip = makePt(gwCx, gwY);
-          el.waypoint = Math.abs(farEnd.y - gwY) <= 0.5
-            ? [tip, farEnd]
-            : [tip, makePt(gwCx, farEnd.y), farEnd];
-        } else if (tgtCy >= gwBot) {
-          // Target below → exit from SOUTH tip, go down then across.
-          const tip = makePt(gwCx, gwBot);
-          el.waypoint = Math.abs(farEnd.y - gwBot) <= 0.5
-            ? [tip, farEnd]
-            : [tip, makePt(gwCx, farEnd.y), farEnd];
+        let tipY: number | undefined;
+        if (tgtCy <= gwY) tipY = gwY;          // target above → NORTH tip
+        else if (tgtCy >= gwBot) tipY = gwBot;  // target below → SOUTH tip
+
+        if (tipY !== undefined) {
+          const skip = new Set<string>([srcId!, ...(tgtId ? [tgtId] : [])]);
+          const vertLo = Math.min(tipY, farEnd.y);
+          const vertHi = Math.max(tipY, farEnd.y);
+          const horizLo = Math.min(gwCx, farEnd.x);
+          const horizHi = Math.max(gwCx, farEnd.x);
+          // Only rebuild if neither segment of the L-shape crosses another element.
+          if (!segmentCrossesAnyElement(false, gwCx, vertLo, vertHi, skip, boundsMap) &&
+              !segmentCrossesAnyElement(true, farEnd.y, horizLo, horizHi, skip, boundsMap)) {
+            const tip = makePt(gwCx, tipY);
+            el.waypoint = Math.abs(farEnd.y - tipY) <= 0.5
+              ? [tip, farEnd]
+              : [tip, makePt(gwCx, farEnd.y), farEnd];
+          }
         }
         // else: target at same height → EAST/WEST path already correct.
       }
@@ -425,18 +470,24 @@ function rebuildGatewayEdgePaths(
         // First waypoint is already on the source boundary — keep it as the far end.
         const farEnd = wps[0];
 
-        if (srcCy <= gwY) {
-          // Source above → enter NORTH tip, path comes across then down.
-          const tip = makePt(gwCx, gwY);
-          el.waypoint = Math.abs(farEnd.y - gwY) <= 0.5
-            ? [farEnd, tip]
-            : [farEnd, makePt(gwCx, farEnd.y), tip];
-        } else if (srcCy >= gwBot) {
-          // Source below → enter SOUTH tip, path comes across then up.
-          const tip = makePt(gwCx, gwBot);
-          el.waypoint = Math.abs(farEnd.y - gwBot) <= 0.5
-            ? [farEnd, tip]
-            : [farEnd, makePt(gwCx, farEnd.y), tip];
+        let tipY: number | undefined;
+        if (srcCy <= gwY) tipY = gwY;          // source above → NORTH tip
+        else if (srcCy >= gwBot) tipY = gwBot;  // source below → SOUTH tip
+
+        if (tipY !== undefined) {
+          const skip = new Set<string>([...(srcId ? [srcId] : []), tgtId!]);
+          const horizLo = Math.min(farEnd.x, gwCx);
+          const horizHi = Math.max(farEnd.x, gwCx);
+          const vertLo = Math.min(farEnd.y, tipY);
+          const vertHi = Math.max(farEnd.y, tipY);
+          // Only rebuild if neither segment of the L-shape crosses another element.
+          if (!segmentCrossesAnyElement(true, farEnd.y, horizLo, horizHi, skip, boundsMap) &&
+              !segmentCrossesAnyElement(false, gwCx, vertLo, vertHi, skip, boundsMap)) {
+            const tip = makePt(gwCx, tipY);
+            el.waypoint = Math.abs(farEnd.y - tipY) <= 0.5
+              ? [farEnd, tip]
+              : [farEnd, makePt(gwCx, farEnd.y), tip];
+          }
         }
         // else: source at same height → EAST/WEST path already correct.
       }
