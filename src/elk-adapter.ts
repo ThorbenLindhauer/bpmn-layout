@@ -79,6 +79,7 @@ const ELK_LAYOUT_OPTIONS = {
  */
 function buildElkChildren(
   process: any,
+  isExpandedMap: Map<string, boolean> = new Map(),
 ): { children: ElkNode[]; edges: ElkExtendedEdge[] } {
   const flowElements: any[] = process.flowElements ?? [];
 
@@ -151,9 +152,15 @@ function buildElkChildren(
       }));
     }
 
-    // Recurse into subprocesses
-    if ((node.flowElements as any[] | undefined)?.length) {
-      const sub = buildElkChildren(node);
+    // Recurse into subprocesses, respecting isExpanded from original DI
+    const expandedOverride = isExpandedMap.get(node.id as string);
+    if (expandedOverride === false) {
+      // Collapsed subprocess: use compact size so ELK routes flows correctly,
+      // and skip child recursion since internal elements aren't visible.
+      elkNode.width = DEFAULT_SIZE.width;
+      elkNode.height = DEFAULT_SIZE.height;
+    } else if ((node.flowElements as any[] | undefined)?.length) {
+      const sub = buildElkChildren(node, isExpandedMap);
       elkNode.children = sub.children;
       elkNode.edges = sub.edges;
       elkNode.layoutOptions = { ...elkNode.layoutOptions, ...ELK_LAYOUT_OPTIONS };
@@ -174,8 +181,8 @@ function buildElkChildren(
   return { children, edges };
 }
 
-function buildElkGraph(process: any): ElkNode {
-  const { children, edges } = buildElkChildren(process);
+function buildElkGraph(process: any, isExpandedMap: Map<string, boolean> = new Map()): ElkNode {
+  const { children, edges } = buildElkChildren(process, isExpandedMap);
   return { id: process.id as string, layoutOptions: ELK_LAYOUT_OPTIONS, children, edges };
 }
 
@@ -204,6 +211,8 @@ function collectShapesAndEdges(
   boundsMap: Map<string, Bounds>,
   offsetX = 0,
   offsetY = 0,
+  existingShapes: Map<string, any> = new Map(),
+  existingEdges: Map<string, any> = new Map(),
 ): { shapes: any[]; edges: any[] } {
   const shapes: any[] = [];
   const edges: any[] = [];
@@ -219,13 +228,20 @@ function collectShapesAndEdges(
 
     boundsMap.set(child.id, { x: absX, y: absY, width: w, height: h });
 
-    shapes.push(
-      (moddle as any).create('bpmndi:BPMNShape', {
-        id: `${child.id}_di`,
-        bpmnElement: element,
-        bounds: (moddle as any).create('dc:Bounds', { x: absX, y: absY, width: w, height: h }),
-      }),
-    );
+    const newBounds = (moddle as any).create('dc:Bounds', { x: absX, y: absY, width: w, height: h });
+    const existingShape = existingShapes.get(child.id);
+    if (existingShape) {
+      existingShape.bounds = newBounds;
+      shapes.push(existingShape);
+    } else {
+      shapes.push(
+        (moddle as any).create('bpmndi:BPMNShape', {
+          id: `${child.id}_di`,
+          bpmnElement: element,
+          bounds: newBounds,
+        }),
+      );
+    }
 
     // ── boundary events modelled as ELK ports ────────────────────────────
     for (const port of child.ports ?? []) {
@@ -248,18 +264,24 @@ function collectShapesAndEdges(
 
       boundsMap.set(port.id as string, beBounds);
 
-      shapes.push(
-        (moddle as any).create('bpmndi:BPMNShape', {
-          id: `${port.id}_di`,
-          bpmnElement: portElement,
-          bounds: (moddle as any).create('dc:Bounds', beBounds),
-        }),
-      );
+      const existingPortShape = existingShapes.get(port.id as string);
+      if (existingPortShape) {
+        existingPortShape.bounds = (moddle as any).create('dc:Bounds', beBounds);
+        shapes.push(existingPortShape);
+      } else {
+        shapes.push(
+          (moddle as any).create('bpmndi:BPMNShape', {
+            id: `${port.id}_di`,
+            bpmnElement: portElement,
+            bounds: (moddle as any).create('dc:Bounds', beBounds),
+          }),
+        );
+      }
     }
 
     // Recurse into subprocesses
     if (child.children?.length) {
-      const sub = collectShapesAndEdges(child, moddle, elementMap, boundsMap, absX, absY);
+      const sub = collectShapesAndEdges(child, moddle, elementMap, boundsMap, absX, absY, existingShapes, existingEdges);
       shapes.push(...sub.shapes);
       edges.push(...sub.edges);
     }
@@ -273,13 +295,19 @@ function collectShapesAndEdges(
       (moddle as any).create('dc:Point', { x: offsetX + p.x, y: offsetY + p.y }),
     );
 
-    edges.push(
-      (moddle as any).create('bpmndi:BPMNEdge', {
-        id: `${edge.id}_di`,
-        bpmnElement: element,
-        waypoint: waypoints,
-      }),
-    );
+    const existingEdge = existingEdges.get(edge.id);
+    if (existingEdge) {
+      existingEdge.waypoint = waypoints;
+      edges.push(existingEdge);
+    } else {
+      edges.push(
+        (moddle as any).create('bpmndi:BPMNEdge', {
+          id: `${edge.id}_di`,
+          bpmnElement: element,
+          waypoint: waypoints,
+        }),
+      );
+    }
   }
 
   return { shapes, edges };
@@ -608,12 +636,31 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
   }
 
   const plane = definitions.diagrams[0].plane;
-  plane.planeElement = [];
+
+  // Build maps of existing DI elements before replacing planeElement.
+  // collectShapesAndEdges will update existing objects in-place (preserving
+  // isExpanded and any other DI attributes) rather than creating new ones.
+  const existingShapes = new Map<string, any>();
+  const existingEdges = new Map<string, any>();
+  const isExpandedMap = new Map<string, boolean>();
+
+  for (const el of (plane.planeElement as any[]) ?? []) {
+    if (el.$type === 'bpmndi:BPMNShape') {
+      existingShapes.set(el.bpmnElement.id as string, el);
+      if (typeof el.isExpanded === 'boolean') {
+        isExpandedMap.set(el.bpmnElement.id as string, el.isExpanded);
+      }
+    } else if (el.$type === 'bpmndi:BPMNEdge') {
+      existingEdges.set(el.bpmnElement.id as string, el);
+    }
+  }
 
   const boundsMap = new Map<string, Bounds>();
+  const allShapes: any[] = [];
+  const allEdges: any[] = [];
 
   for (const process of processes) {
-    const elkGraph = buildElkGraph(process);
+    const elkGraph = buildElkGraph(process, isExpandedMap);
 
     // Two-pass layout for processes that contain gateways:
     //
@@ -636,9 +683,16 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
     }
 
     const laidOut = await elk.layout(elkGraph);
-    const { shapes, edges } = collectShapesAndEdges(laidOut, moddle, elementMap, boundsMap);
-    plane.planeElement.push(...shapes, ...edges);
+    const { shapes, edges } = collectShapesAndEdges(
+      laidOut, moddle, elementMap, boundsMap, 0, 0, existingShapes, existingEdges,
+    );
+    allShapes.push(...shapes);
+    allEdges.push(...edges);
   }
+
+  // Replace planeElement: stale DI is excluded (only ELK-laid-out elements kept),
+  // but existing objects carry their original non-layout attributes unchanged.
+  plane.planeElement = [...allShapes, ...allEdges];
 
   // Snap edge endpoints to the visual boundary of source/target shapes.
   // Gateways use diamond geometry; all other shapes use rectangle geometry.
