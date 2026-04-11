@@ -5,6 +5,10 @@ Automatically layout BPMN models using the [ELK](https://eclipse.dev/elk/) layer
 Takes a BPMN XML string, computes left-to-right layout coordinates via `elkjs`, updates the
 BPMN Diagram Interchange (DI), and returns the result as a BPMN XML string.
 
+## Disclaimer
+
+This project has been largely vibe-coded with Claude Code. Most of the code has not been reviewed in depth by a human.
+
 ## Requirements
 
 **Node.js 18 or later** is required. This is the minimum version supported by the build
