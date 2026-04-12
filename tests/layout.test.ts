@@ -483,12 +483,106 @@ describe('label preservation', () => {
     expect(task1Shape.label.bounds.y - task1Shape.bounds.y).toBe(88);
   });
 
-  it('edge label bounds are cleared after re-routing', async () => {
+  it('named edge label bounds are set after re-routing; unnamed edge label bounds are cleared', async () => {
     const result = await layout(fixture('labeled-shape.bpmn'));
     const { edges } = await parseDi(result);
+    // sf1 has name="Go!" → label bounds must be set by ELK
     const sf1Edge = edges.find((e: any) => e.bpmnElement.id === 'sf1');
     expect(sf1Edge, 'edge sf1 not found').toBeDefined();
-    expect(sf1Edge.label?.bounds).toBeUndefined();
+    expect(sf1Edge.label?.bounds, 'sf1 label bounds should be defined for a named edge').toBeDefined();
+    // sf2 has no name → stale bounds must be cleared
+    const sf2Edge = edges.find((e: any) => e.bpmnElement.id === 'sf2');
+    expect(sf2Edge, 'edge sf2 not found').toBeDefined();
+    expect(sf2Edge.label?.bounds).toBeUndefined();
+  });
+});
+
+// ─── labels included in layout ───────────────────────────────────────────────
+
+describe('labels included in layout', () => {
+  it('event shapes with names have label bounds set after layout', async () => {
+    const result = await layout(fixture('labeled-elements.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s]));
+    expect(byId['start1'].label?.bounds, 'start1 label bounds missing').toBeDefined();
+    expect(byId['end1'].label?.bounds,   'end1 label bounds missing').toBeDefined();
+  });
+
+  it('event label is positioned below the event shape', async () => {
+    const result = await layout(fixture('labeled-elements.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s]));
+    for (const id of ['start1', 'end1']) {
+      const shape = byId[id];
+      const lb = shape.label.bounds;
+      expect(
+        lb.y,
+        `${id} label top (${lb.y}) should be at or below shape bottom (${shape.bounds.y + shape.bounds.height})`,
+      ).toBeGreaterThanOrEqual(shape.bounds.y + shape.bounds.height);
+    }
+  });
+
+  it('event label is horizontally centered near the event shape', async () => {
+    const result = await layout(fixture('labeled-elements.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s]));
+    for (const id of ['start1', 'end1']) {
+      const shape = byId[id];
+      const shapeCx = shape.bounds.x + shape.bounds.width / 2;
+      const lb = shape.label.bounds;
+      const labelCx = lb.x + lb.width / 2;
+      expect(
+        Math.abs(labelCx - shapeCx),
+        `${id} label center (${labelCx}) should be near shape center (${shapeCx})`,
+      ).toBeLessThanOrEqual(lb.width / 2 + 5);
+    }
+  });
+
+  it('gateway shape with name has label bounds set after layout', async () => {
+    const result = await layout(fixture('labeled-elements.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s]));
+    expect(byId['gw1'].label?.bounds, 'gw1 label bounds missing').toBeDefined();
+  });
+
+  it('gateway label is positioned below the gateway shape', async () => {
+    const result = await layout(fixture('labeled-elements.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s]));
+    const gw = byId['gw1'];
+    const lb = gw.label.bounds;
+    expect(
+      lb.y,
+      `gw1 label top (${lb.y}) should be at or below gateway bottom (${gw.bounds.y + gw.bounds.height})`,
+    ).toBeGreaterThanOrEqual(gw.bounds.y + gw.bounds.height);
+  });
+
+  it('named sequence flow has label bounds set after layout', async () => {
+    const result = await layout(fixture('labeled-elements.bpmn'));
+    const { edges } = await parseDi(result);
+    const sf2 = edges.find((e: any) => e.bpmnElement.id === 'sf2');
+    expect(sf2, 'edge sf2 not found').toBeDefined();
+    expect(sf2.label?.bounds, 'sf2 label bounds should be set for a named sequence flow').toBeDefined();
+  });
+
+  it('sequence flow label is positioned within the edge bounding box', async () => {
+    const result = await layout(fixture('labeled-elements.bpmn'));
+    const { edges } = await parseDi(result);
+    const sf2 = edges.find((e: any) => e.bpmnElement.id === 'sf2');
+    expect(sf2).toBeDefined();
+    const wps: Array<{ x: number; y: number }> = sf2.waypoint;
+    const minX = Math.min(...wps.map((p: any) => p.x));
+    const maxX = Math.max(...wps.map((p: any) => p.x));
+    const minY = Math.min(...wps.map((p: any) => p.y));
+    const maxY = Math.max(...wps.map((p: any) => p.y));
+    const lb = sf2.label.bounds;
+    const labelCx = lb.x + lb.width / 2;
+    const labelCy = lb.y + lb.height / 2;
+    const tol = 30;
+    expect(labelCx, `sf2 label center x (${labelCx}) out of edge x range [${minX},${maxX}]`).toBeGreaterThanOrEqual(minX - tol);
+    expect(labelCx, `sf2 label center x (${labelCx}) out of edge x range [${minX},${maxX}]`).toBeLessThanOrEqual(maxX + tol);
+    expect(labelCy, `sf2 label center y (${labelCy}) out of edge y range [${minY},${maxY}]`).toBeGreaterThanOrEqual(minY - tol);
+    expect(labelCy, `sf2 label center y (${labelCy}) out of edge y range [${minY},${maxY}]`).toBeLessThanOrEqual(maxY + tol);
   });
 });
 
