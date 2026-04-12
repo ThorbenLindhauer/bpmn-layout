@@ -11,10 +11,12 @@ const fileLabel = document.getElementById('file-label') as HTMLLabelElement;
 const layoutBtn = document.getElementById('layout-btn') as HTMLButtonElement;
 const saveBtn = document.getElementById('save-btn') as HTMLButtonElement;
 const status = document.getElementById('status') as HTMLSpanElement;
+const layoutPlaceholder = document.getElementById('layout-placeholder') as HTMLDivElement;
 
-// ─── bpmn-js viewer ───────────────────────────────────────────────────────────
+// ─── bpmn-js viewers ──────────────────────────────────────────────────────────
 
-const viewer = new NavigatedViewer({ container: '#canvas' });
+const originalViewer = new NavigatedViewer({ container: '#canvas-original' });
+const layoutViewer = new NavigatedViewer({ container: '#canvas-layout' });
 
 // ─── state ────────────────────────────────────────────────────────────────────
 
@@ -28,7 +30,7 @@ function setStatus(msg: string, isError = false) {
   status.className = isError ? 'error' : '';
 }
 
-async function renderXml(xml: string) {
+async function renderXml(xml: string, viewer: typeof originalViewer) {
   try {
     await viewer.importXML(xml);
     const canvas = (viewer as any).get('canvas');
@@ -47,14 +49,14 @@ fileInput.addEventListener('change', () => {
   fileLabel.textContent = `\u{1F4C4} ${file.name}`;
   laidOutXml = null;
   saveBtn.disabled = true;
+  layoutPlaceholder.style.display = '';
   setStatus('File loaded — click "Apply Layout"');
 
   const reader = new FileReader();
   reader.onload = async (e) => {
     currentXml = e.target?.result as string;
     layoutBtn.disabled = false;
-    // Preview the original diagram
-    await renderXml(currentXml);
+    await renderXml(currentXml, originalViewer);
   };
   reader.readAsText(file);
 });
@@ -69,7 +71,8 @@ layoutBtn.addEventListener('click', async () => {
 
   try {
     laidOutXml = await layout(currentXml);
-    await renderXml(laidOutXml);
+    layoutPlaceholder.style.display = 'none';
+    await renderXml(laidOutXml, layoutViewer);
     saveBtn.disabled = false;
     setStatus('Layout applied.');
   } catch (err: any) {
