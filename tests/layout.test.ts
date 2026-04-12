@@ -378,6 +378,121 @@ describe('multiple boundary events', () => {
   });
 });
 
+// ─── gateway fan-out (real-world Camunda diagrams) ───────────────────────────
+
+describe('gateway fan-out: gateway.bpmn', () => {
+  it('first waypoint of every edge lies on the visual boundary of its source', async () => {
+    const result = await layout(fixture('gateway.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const infoById = Object.fromEntries(
+      shapes.map((s: any) => [s.bpmnElement.id, { bounds: s.bounds, type: s.bpmnElement.$type }]),
+    );
+    for (const edge of edges) {
+      const srcId = edge.bpmnElement.sourceRef?.id ?? edge.bpmnElement.sourceRef;
+      const firstWp = edge.waypoint[0];
+      const src = infoById[srcId];
+      if (!src) continue;
+      expect(
+        isOnVisualBoundary(firstWp, src.type, src.bounds),
+        `first waypoint (${firstWp.x},${firstWp.y}) of ${edge.bpmnElement.id} not on visual boundary of ${srcId}`,
+      ).toBe(true);
+    }
+  });
+
+  it('last waypoint of every edge lies on the visual boundary of its target', async () => {
+    const result = await layout(fixture('gateway.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const infoById = Object.fromEntries(
+      shapes.map((s: any) => [s.bpmnElement.id, { bounds: s.bounds, type: s.bpmnElement.$type }]),
+    );
+    for (const edge of edges) {
+      const tgtId = edge.bpmnElement.targetRef?.id ?? edge.bpmnElement.targetRef;
+      const lastWp = edge.waypoint[edge.waypoint.length - 1];
+      const tgt = infoById[tgtId];
+      if (!tgt) continue;
+      expect(
+        isOnVisualBoundary(lastWp, tgt.type, tgt.bounds),
+        `last waypoint (${lastWp.x},${lastWp.y}) of ${edge.bpmnElement.id} not on visual boundary of ${tgtId}`,
+      ).toBe(true);
+    }
+  });
+
+  it('Flow_1l3rm1w first waypoint is exactly on the parallel gateway diamond (no horizontal stub)', async () => {
+    const result = await layout(fixture('gateway.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const gw = shapes.find((s: any) => s.bpmnElement.id === 'Gateway_1n2w03g');
+    const edge = edges.find((e: any) => e.bpmnElement.id === 'Flow_1l3rm1w');
+    expect(gw, 'Gateway_1n2w03g shape not found').toBeDefined();
+    expect(edge, 'Flow_1l3rm1w edge not found').toBeDefined();
+    const firstWp = edge.waypoint[0];
+    expect(
+      isOnDiamondBoundary(firstWp, gw.bounds),
+      `Flow_1l3rm1w first waypoint (${firstWp.x},${firstWp.y}) not on diamond of Gateway_1n2w03g ` +
+      JSON.stringify(gw.bounds),
+    ).toBe(true);
+    // Specifically: the second waypoint must share the same x as the first
+    // (path turns down from the diamond vertex — no horizontal preamble stub).
+    const secondWp = edge.waypoint[1];
+    expect(secondWp.x).toBe(firstWp.x);
+  });
+});
+
+describe('gateway fan-out: gateway2.bpmn', () => {
+  it('first waypoint of every edge lies on the visual boundary of its source', async () => {
+    const result = await layout(fixture('gateway2.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const infoById = Object.fromEntries(
+      shapes.map((s: any) => [s.bpmnElement.id, { bounds: s.bounds, type: s.bpmnElement.$type }]),
+    );
+    for (const edge of edges) {
+      const srcId = edge.bpmnElement.sourceRef?.id ?? edge.bpmnElement.sourceRef;
+      const firstWp = edge.waypoint[0];
+      const src = infoById[srcId];
+      if (!src) continue;
+      expect(
+        isOnVisualBoundary(firstWp, src.type, src.bounds),
+        `first waypoint (${firstWp.x},${firstWp.y}) of ${edge.bpmnElement.id} not on visual boundary of ${srcId}`,
+      ).toBe(true);
+    }
+  });
+
+  it('last waypoint of every edge lies on the visual boundary of its target', async () => {
+    const result = await layout(fixture('gateway2.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const infoById = Object.fromEntries(
+      shapes.map((s: any) => [s.bpmnElement.id, { bounds: s.bounds, type: s.bpmnElement.$type }]),
+    );
+    for (const edge of edges) {
+      const tgtId = edge.bpmnElement.targetRef?.id ?? edge.bpmnElement.targetRef;
+      const lastWp = edge.waypoint[edge.waypoint.length - 1];
+      const tgt = infoById[tgtId];
+      if (!tgt) continue;
+      expect(
+        isOnVisualBoundary(lastWp, tgt.type, tgt.bounds),
+        `last waypoint (${lastWp.x},${lastWp.y}) of ${edge.bpmnElement.id} not on visual boundary of ${tgtId}`,
+      ).toBe(true);
+    }
+  });
+
+  it('Flow_1l3rm1w first waypoint is exactly on the parallel gateway diamond (no horizontal stub)', async () => {
+    const result = await layout(fixture('gateway2.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const gw = shapes.find((s: any) => s.bpmnElement.id === 'Gateway_1n2w03g');
+    const edge = edges.find((e: any) => e.bpmnElement.id === 'Flow_1l3rm1w');
+    expect(gw, 'Gateway_1n2w03g shape not found').toBeDefined();
+    expect(edge, 'Flow_1l3rm1w edge not found').toBeDefined();
+    const firstWp = edge.waypoint[0];
+    expect(
+      isOnDiamondBoundary(firstWp, gw.bounds),
+      `Flow_1l3rm1w first waypoint (${firstWp.x},${firstWp.y}) not on diamond of Gateway_1n2w03g ` +
+      JSON.stringify(gw.bounds),
+    ).toBe(true);
+    // The second waypoint must share the same x as the first — no horizontal stub.
+    const secondWp = edge.waypoint[1];
+    expect(secondWp.x).toBe(firstWp.x);
+  });
+});
+
 // ─── edge orthogonality ──────────────────────────────────────────────────────
 
 describe('edge orthogonality', () => {
@@ -385,6 +500,8 @@ describe('edge orthogonality', () => {
     'simple-linear.bpmn',
     'parallel-gateway.bpmn',
     'gateway-connection.bpmn',
+    'gateway.bpmn',
+    'gateway2.bpmn',
     'loop.bpmn',
     'boundary-event.bpmn',
     'multi-boundary-event.bpmn',

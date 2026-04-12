@@ -403,13 +403,15 @@ function snapGatewayEndpoint(
 
   wps[epIdx] = (moddle as any).create('dc:Point', vertex);
 
-  // If adj already shares the exit-axis coordinate with vertex the path is
-  // already rectilinear — nothing more to do.
+  // Determine whether the adjacent waypoint shares the exit-axis coordinate
+  // with vertex.  When false (needsElbow=false) the path is already rectilinear
+  // IF there is no stub — but a stub can still exist when adj is offset along
+  // the exit axis (e.g. adj.y==vertex.y but adj.x!=vertex.x for a horizontal
+  // exit).  We therefore attempt column-collapse first in both cases and only
+  // use needsElbow as a final guard before the elbow-insertion fallback.
   const needsElbow = horizontal
     ? Math.abs(vertex.y - adj.y) > 0.5
     : Math.abs(vertex.x - adj.x) > 0.5;
-
-  if (!needsElbow) return;
 
   // ── column-collapse approach ──────────────────────────────────────────────
   //
@@ -417,7 +419,8 @@ function snapGatewayEndpoint(
   // consecutive waypoints that all share adj's perpendicular coordinate
   // (same x for a horizontal exit, same y for a vertical exit).  Collapsing
   // this entire column to the diamond vertex coordinate eliminates the short
-  // stub ELK inserts near the bounding-box face.
+  // stub ELK inserts near the bounding-box face — whether or not needsElbow
+  // is true.
   //
   // Safety requirement: the segment that leads *into* the column (for target)
   // or *out of* the column (for source) must be parallel to the exit direction
@@ -478,6 +481,10 @@ function snapGatewayEndpoint(
       return;
     }
   }
+
+  // Column collapse didn't apply.  If adj already shares the exit-axis
+  // coordinate with vertex the path is rectilinear as-is — nothing more to do.
+  if (!needsElbow) return;
 
   // ── fallback: elbow insertion ─────────────────────────────────────────────
   //
