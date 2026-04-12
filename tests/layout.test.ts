@@ -532,6 +532,72 @@ describe('collapsed subprocess', () => {
   });
 });
 
+// ─── pools (collaboration) ───────────────────────────────────────────────────
+
+describe('pools (collaboration)', () => {
+  it('creates a BPMNShape for each participant', async () => {
+    const result = await layout(fixture('pool.bpmn'));
+    const { shapes } = await parseDi(result);
+    const ids = shapes.map((s: any) => s.bpmnElement.id);
+    expect(ids).toContain('pool1');
+    expect(ids).toContain('pool2');
+  });
+
+  it('pool shapes have valid positive dimensions', async () => {
+    const result = await layout(fixture('pool.bpmn'));
+    const { shapes } = await parseDi(result);
+    for (const shape of shapes.filter((s: any) => ['pool1', 'pool2'].includes(s.bpmnElement.id))) {
+      expect(shape.bounds.width).toBeGreaterThan(0);
+      expect(shape.bounds.height).toBeGreaterThan(0);
+    }
+  });
+
+  it('creates shapes for all flow nodes in both processes', async () => {
+    const result = await layout(fixture('pool.bpmn'));
+    const { shapes } = await parseDi(result);
+    const ids = shapes.map((s: any) => s.bpmnElement.id);
+    for (const id of ['start1', 'task1', 'end1', 'start2', 'task2', 'end2']) {
+      expect(ids).toContain(id);
+    }
+  });
+
+  it('creates edges for all sequence flows in both processes', async () => {
+    const result = await layout(fixture('pool.bpmn'));
+    const { edges } = await parseDi(result);
+    const ids = edges.map((e: any) => e.bpmnElement.id);
+    for (const id of ['sf1', 'sf2', 'sf3', 'sf4']) {
+      expect(ids).toContain(id);
+    }
+  });
+
+  it('pools are stacked vertically (pool2 below pool1)', async () => {
+    const result = await layout(fixture('pool.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    expect(byId['pool2'].y).toBeGreaterThanOrEqual(byId['pool1'].y + byId['pool1'].height);
+  });
+
+  it('flow nodes are positioned inside their containing pool bounds', async () => {
+    const result = await layout(fixture('pool.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+
+    for (const [nodeId, poolId] of [
+      ['start1', 'pool1'], ['task1', 'pool1'], ['end1', 'pool1'],
+      ['start2', 'pool2'], ['task2', 'pool2'], ['end2', 'pool2'],
+    ] as const) {
+      const pool = byId[poolId];
+      const node = byId[nodeId];
+      const nodeCx = node.x + node.width / 2;
+      const nodeCy = node.y + node.height / 2;
+      expect(nodeCx).toBeGreaterThan(pool.x);
+      expect(nodeCx).toBeLessThan(pool.x + pool.width);
+      expect(nodeCy).toBeGreaterThan(pool.y);
+      expect(nodeCy).toBeLessThan(pool.y + pool.height);
+    }
+  });
+});
+
 // ─── loop (cyclic graph) ─────────────────────────────────────────────────────
 
 describe('loop (cyclic graph)', () => {

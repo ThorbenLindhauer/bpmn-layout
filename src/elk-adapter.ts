@@ -32,6 +32,12 @@ const ELEMENT_SIZES: Record<string, { width: number; height: number }> = {
 
 const DEFAULT_SIZE = { width: 100, height: 80 };
 
+// ─── pool layout constants ────────────────────────────────────────────────────
+
+const POOL_LABEL_WIDTH = 30;   // width of the pool name label column on the left
+const POOL_PADDING     = 20;   // padding inside each pool around the ELK content
+const PARTICIPANT_GAP  = 20;   // vertical gap between consecutive pools
+
 function sizeOf(element: any) {
   return ELEMENT_SIZES[element.$type as string] ?? DEFAULT_SIZE;
 }
@@ -643,13 +649,17 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
     (e: any) => e.$type === 'bpmn:Process',
   );
 
+  const collaboration: any | undefined = (definitions.rootElements as any[]).find(
+    (e: any) => e.$type === 'bpmn:Collaboration',
+  );
+
   const elementMap = buildElementMap(definitions.rootElements as any[]);
 
   if (!definitions.diagrams?.length) {
-    const mainProcess = processes[0];
+    const planeTarget = collaboration ?? processes[0];
     const plane = (moddle as any).create('bpmndi:BPMNPlane', {
       id: 'plane1',
-      bpmnElement: mainProcess,
+      bpmnElement: planeTarget,
     });
     definitions.diagrams = [
       (moddle as any).create('bpmndi:BPMNDiagram', { id: 'diagram1', plane }),
@@ -680,35 +690,126 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
   const allShapes: any[] = [];
   const allEdges: any[] = [];
 
-  for (const process of processes) {
-    const elkGraph = buildElkGraph(process, isExpandedMap);
+  if (collaboration) {
+    // ── Pool (collaboration) layout ───────────────────────────────────────────
+    // Each participant is laid out independently with ELK (direction RIGHT),
+    // then stacked vertically. Message flows are intentionally excluded: routing
+    // them without crossings requires ELK's compound-graph support and is
+    // deferred to a follow-up implementation.
+    let currentY = 0;
 
-    // Two-pass layout for processes that contain gateways:
-    //
-    // Pass 1 — let ELK auto-assign ports and establish rough node positions.
-    // Pass 2 — re-assign each gateway edge to the cardinal port (N/S/E/W) that
-    //           faces the connected node, then re-run ELK so it plans routes
-    //           from/to the exact diamond vertices.
-    //
-    // We clone the input for Pass 1 so ELK's internal mutations (if any) do not
-    // affect the graph we modify for Pass 2.
-    const gatewayIds = new Set<string>(
-      ((process.flowElements as any[]) ?? [])
-        .filter((e: any) => GATEWAY_TYPES.has(e.$type as string))
-        .map((e: any) => e.id as string),
-    );
+    for (const participant of (collaboration.participants as any[]) ?? []) {
+      const process: any | undefined = participant.processRef;
 
-    if (gatewayIds.size > 0) {
-      const pass1 = await elk.layout(JSON.parse(JSON.stringify(elkGraph)) as ElkNode);
-      assignGatewayPortsFromLayout(elkGraph, pass1, gatewayIds);
+      if (!process) {
+        // Empty pool — emit a minimal placeholder shape.
+        const emptyBounds = { x: 0, y: currentY, width: POOL_LABEL_WIDTH + POOL_PADDING * 2, height: POOL_PADDING * 2 };
+        boundsMap.set(participant.id as string, emptyBounds);
+        const existingShape = existingShapes.get(participant.id as string);
+        if (existingShape) {
+          existingShape.bounds = (moddle as any).create('dc:Bounds', emptyBounds);
+          allShapes.push(existingShape);
+        } else {
+          allShapes.push(
+            (moddle as any).create('bpmndi:BPMNShape', {
+              id: `${participant.id as string}_di`,
+              bpmnElement: participant,
+              bounds: (moddle as any).create('dc:Bounds', emptyBounds),
+              isHorizontal: true,
+            }),
+          );
+        }
+        currentY += emptyBounds.height + PARTICIPANT_GAP;
+        continue;
+      }
+
+      const elkGraph = buildElkGraph(process, isExpandedMap);
+
+      // Two-pass gateway layout (same logic as the non-pool path below).
+      const gatewayIds = new Set<string>(
+        ((process.flowElements as any[]) ?? [])
+          .filter((e: any) => GATEWAY_TYPES.has(e.$type as string))
+          .map((e: any) => e.id as string),
+      );
+      if (gatewayIds.size > 0) {
+        const pass1 = await elk.layout(JSON.parse(JSON.stringify(elkGraph)) as ElkNode);
+        assignGatewayPortsFromLayout(elkGraph, pass1, gatewayIds);
+      }
+
+      const laidOut = await elk.layout(elkGraph);
+
+      // Compute content bounding box from ELK output.
+      let contentWidth = 0;
+      let contentHeight = 0;
+      for (const child of laidOut.children ?? []) {
+        contentWidth  = Math.max(contentWidth,  (child.x ?? 0) + (child.width  ?? 0));
+        contentHeight = Math.max(contentHeight, (child.y ?? 0) + (child.height ?? 0));
+      }
+
+      const participantWidth  = POOL_LABEL_WIDTH + POOL_PADDING + contentWidth  + POOL_PADDING;
+      const participantHeight =                    POOL_PADDING + contentHeight + POOL_PADDING;
+      const participantBounds = { x: 0, y: currentY, width: participantWidth, height: participantHeight };
+      boundsMap.set(participant.id as string, participantBounds);
+
+      // Emit BPMNShape for the participant (pool).
+      const existingParticipantShape = existingShapes.get(participant.id as string);
+      if (existingParticipantShape) {
+        existingParticipantShape.bounds = (moddle as any).create('dc:Bounds', participantBounds);
+        allShapes.push(existingParticipantShape);
+      } else {
+        allShapes.push(
+          (moddle as any).create('bpmndi:BPMNShape', {
+            id: `${participant.id as string}_di`,
+            bpmnElement: participant,
+            bounds: (moddle as any).create('dc:Bounds', participantBounds),
+            isHorizontal: true,
+          }),
+        );
+      }
+
+      // Collect process shapes/edges, offset into the pool interior.
+      const offsetX = POOL_LABEL_WIDTH + POOL_PADDING;
+      const offsetY = currentY + POOL_PADDING;
+      const { shapes, edges } = collectShapesAndEdges(
+        laidOut, moddle, elementMap, boundsMap, offsetX, offsetY, existingShapes, existingEdges,
+      );
+      allShapes.push(...shapes);
+      allEdges.push(...edges);
+
+      currentY += participantHeight + PARTICIPANT_GAP;
     }
+  } else {
+    // ── Plain process layout (no collaboration) ───────────────────────────────
+    for (const process of processes) {
+      const elkGraph = buildElkGraph(process, isExpandedMap);
 
-    const laidOut = await elk.layout(elkGraph);
-    const { shapes, edges } = collectShapesAndEdges(
-      laidOut, moddle, elementMap, boundsMap, 0, 0, existingShapes, existingEdges,
-    );
-    allShapes.push(...shapes);
-    allEdges.push(...edges);
+      // Two-pass layout for processes that contain gateways:
+      //
+      // Pass 1 — let ELK auto-assign ports and establish rough node positions.
+      // Pass 2 — re-assign each gateway edge to the cardinal port (N/S/E/W) that
+      //           faces the connected node, then re-run ELK so it plans routes
+      //           from/to the exact diamond vertices.
+      //
+      // We clone the input for Pass 1 so ELK's internal mutations (if any) do not
+      // affect the graph we modify for Pass 2.
+      const gatewayIds = new Set<string>(
+        ((process.flowElements as any[]) ?? [])
+          .filter((e: any) => GATEWAY_TYPES.has(e.$type as string))
+          .map((e: any) => e.id as string),
+      );
+
+      if (gatewayIds.size > 0) {
+        const pass1 = await elk.layout(JSON.parse(JSON.stringify(elkGraph)) as ElkNode);
+        assignGatewayPortsFromLayout(elkGraph, pass1, gatewayIds);
+      }
+
+      const laidOut = await elk.layout(elkGraph);
+      const { shapes, edges } = collectShapesAndEdges(
+        laidOut, moddle, elementMap, boundsMap, 0, 0, existingShapes, existingEdges,
+      );
+      allShapes.push(...shapes);
+      allEdges.push(...edges);
+    }
   }
 
   // Replace planeElement: stale DI is excluded (only ELK-laid-out elements kept),
