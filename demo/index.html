@@ -86,18 +86,55 @@
 
     #canvas-wrap {
       flex: 1;
-      position: relative;
+      display: flex;
+      flex-direction: row;
       overflow: hidden;
     }
 
-    #canvas {
-      width: 100%;
-      height: 100%;
+    .canvas-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    .canvas-panel + .canvas-panel {
+      border-left: 1px solid #ddd;
+    }
+
+    .panel-label {
+      background: #f0f0f0;
+      border-bottom: 1px solid #ddd;
+      padding: 5px 12px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      flex-shrink: 0;
+    }
+
+    .canvas-viewer {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
       background: #fff;
     }
 
     /* bpmn-js injects its own styles; ensure the container fills space */
     .bjs-container { width: 100%; height: 100%; }
+
+    #layout-placeholder {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #fafafa;
+      color: #aaa;
+      font-size: 0.9rem;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
@@ -114,7 +151,16 @@
   </div>
 
   <div id="canvas-wrap">
-    <div id="canvas"></div>
+    <div class="canvas-panel">
+      <div class="panel-label">Original</div>
+      <div id="canvas-original" class="canvas-viewer"></div>
+    </div>
+    <div class="canvas-panel">
+      <div class="panel-label">Laid out</div>
+      <div id="canvas-layout" class="canvas-viewer">
+        <div id="layout-placeholder">Apply layout to see result</div>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="./main.ts"></script>
