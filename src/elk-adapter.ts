@@ -32,6 +32,27 @@ const ELEMENT_SIZES: Record<string, { width: number; height: number }> = {
 
 const DEFAULT_SIZE = { width: 100, height: 80 };
 
+// ─── label size estimation ────────────────────────────────────────────────────
+
+const LABEL_CHAR_WIDTH  = 7;    // avg px per character
+const LABEL_LINE_HEIGHT = 14;   // px per line
+const LABEL_MAX_WIDTH   = 100;  // wrap after this many px
+
+function estimateLabelSize(name: string): { width: number; height: number } {
+  const totalPx = name.length * LABEL_CHAR_WIDTH;
+  const width   = Math.min(totalPx, LABEL_MAX_WIDTH);
+  const lines   = Math.max(1, Math.ceil(totalPx / LABEL_MAX_WIDTH));
+  return { width, height: lines * LABEL_LINE_HEIGHT };
+}
+
+/** Element types whose labels render OUTSIDE (below) the shape bounds. */
+const EXTERNAL_LABEL_TYPES = new Set([
+  'bpmn:StartEvent', 'bpmn:EndEvent',
+  'bpmn:IntermediateCatchEvent', 'bpmn:IntermediateThrowEvent', 'bpmn:BoundaryEvent',
+  'bpmn:ExclusiveGateway', 'bpmn:ParallelGateway', 'bpmn:InclusiveGateway',
+  'bpmn:EventBasedGateway', 'bpmn:ComplexGateway',
+]);
+
 // ─── pool layout constants ────────────────────────────────────────────────────
 
 const POOL_LABEL_WIDTH = 30;   // width of the pool name label column on the left
@@ -158,6 +179,19 @@ function buildElkChildren(
       }));
     }
 
+    // For events and gateways with names, add an ELK label so the layout engine
+    // reserves space below the shape and prevents other elements from overlapping
+    // the rendered label area.
+    const nodeName = node.name as string | undefined;
+    if (nodeName && EXTERNAL_LABEL_TYPES.has(node.$type as string)) {
+      const lblSize = estimateLabelSize(nodeName);
+      elkNode.labels = [{ id: `${node.id as string}_label`, text: nodeName, ...lblSize }];
+      elkNode.layoutOptions = {
+        ...elkNode.layoutOptions,
+        'elk.nodeLabels.placement': '[OUTSIDE, V_BOTTOM, H_CENTER]',
+      };
+    }
+
     // Recurse into subprocesses, respecting isExpanded from original DI
     const expandedOverride = isExpandedMap.get(node.id as string);
     if (expandedOverride === false) {
@@ -178,11 +212,19 @@ function buildElkChildren(
   // Include all flows where both endpoints are regular nodes OR boundary-event ports
   const edges: ElkExtendedEdge[] = allFlows
     .filter((sf: any) => connectableIds.has(sf.sourceRef?.id) && connectableIds.has(sf.targetRef?.id))
-    .map((sf: any) => ({
-      id: sf.id as string,
-      sources: [sf.sourceRef.id as string],
-      targets: [sf.targetRef.id as string],
-    }));
+    .map((sf: any) => {
+      const elkEdge: ElkExtendedEdge = {
+        id: sf.id as string,
+        sources: [sf.sourceRef.id as string],
+        targets: [sf.targetRef.id as string],
+      };
+      const sfName = sf.name as string | undefined;
+      if (sfName) {
+        const lblSize = estimateLabelSize(sfName);
+        (elkEdge as any).labels = [{ id: `${sf.id as string}_label`, text: sfName, ...lblSize }];
+      }
+      return elkEdge;
+    });
 
   return { children, edges };
 }
@@ -235,12 +277,35 @@ function collectShapesAndEdges(
     boundsMap.set(child.id, { x: absX, y: absY, width: w, height: h });
 
     const newBounds = (moddle as any).create('dc:Bounds', { x: absX, y: absY, width: w, height: h });
+
+    // If ELK computed a label position (for events / gateways with external labels),
+    // use it directly. Otherwise fall back to delta-translating any existing offset.
+    const elkLabel = child.labels?.[0];
+    let elkLabelBounds: Bounds | undefined;
+    if (elkLabel) {
+      elkLabelBounds = {
+        x: absX + (elkLabel.x ?? 0),
+        y: absY + (elkLabel.y ?? 0),
+        width: elkLabel.width ?? 0,
+        height: elkLabel.height ?? 0,
+      };
+    }
+
     const existingShape = existingShapes.get(child.id);
     if (existingShape) {
       const dx = absX - (existingShape.bounds?.x ?? absX);
       const dy = absY - (existingShape.bounds?.y ?? absY);
       existingShape.bounds = newBounds;
-      if (existingShape.label?.bounds) {
+      if (elkLabelBounds) {
+        // Use ELK-computed absolute position for the label.
+        const lblBounds = (moddle as any).create('dc:Bounds', elkLabelBounds);
+        if (existingShape.label) {
+          existingShape.label.bounds = lblBounds;
+        } else {
+          existingShape.label = (moddle as any).create('bpmndi:BPMNLabel', { bounds: lblBounds });
+        }
+      } else if (existingShape.label?.bounds) {
+        // Translate existing label (e.g. task internal label) by the same delta as the shape.
         const lb = existingShape.label.bounds;
         existingShape.label.bounds = (moddle as any).create('dc:Bounds', {
           x: lb.x + dx, y: lb.y + dy, width: lb.width, height: lb.height,
@@ -248,13 +313,17 @@ function collectShapesAndEdges(
       }
       shapes.push(existingShape);
     } else {
-      shapes.push(
-        (moddle as any).create('bpmndi:BPMNShape', {
-          id: `${child.id}_di`,
-          bpmnElement: element,
-          bounds: newBounds,
-        }),
-      );
+      const newShape = (moddle as any).create('bpmndi:BPMNShape', {
+        id: `${child.id}_di`,
+        bpmnElement: element,
+        bounds: newBounds,
+      });
+      if (elkLabelBounds) {
+        newShape.label = (moddle as any).create('bpmndi:BPMNLabel', {
+          bounds: (moddle as any).create('dc:Bounds', elkLabelBounds),
+        });
+      }
+      shapes.push(newShape);
     }
 
     // ── boundary events modelled as ELK ports ────────────────────────────
@@ -318,22 +387,45 @@ function collectShapesAndEdges(
     );
 
     const existingEdge = existingEdges.get(edge.id);
+    // Extract ELK-computed label position for named sequence flows.
+    const elkEdgeLabel = (edge as any).labels?.[0];
+    let edgeLabelBounds: Bounds | undefined;
+    if (elkEdgeLabel) {
+      edgeLabelBounds = {
+        x: offsetX + (elkEdgeLabel.x ?? 0),
+        y: offsetY + (elkEdgeLabel.y ?? 0),
+        width: elkEdgeLabel.width ?? 0,
+        height: elkEdgeLabel.height ?? 0,
+      };
+    }
+
     if (existingEdge) {
       existingEdge.waypoint = waypoints;
-      // The edge path is completely re-routed, so any absolute label position
-      // is now stale. Clear it so tools auto-position the label on the new path.
-      if (existingEdge.label?.bounds) {
+      if (edgeLabelBounds) {
+        // Use ELK-computed position for the label along the new route.
+        const lblBounds = (moddle as any).create('dc:Bounds', edgeLabelBounds);
+        if (existingEdge.label) {
+          existingEdge.label.bounds = lblBounds;
+        } else {
+          existingEdge.label = (moddle as any).create('bpmndi:BPMNLabel', { bounds: lblBounds });
+        }
+      } else if (existingEdge.label?.bounds) {
+        // Unnamed edge: path re-routed, clear stale absolute position.
         existingEdge.label.bounds = undefined;
       }
       edges.push(existingEdge);
     } else {
-      edges.push(
-        (moddle as any).create('bpmndi:BPMNEdge', {
-          id: `${edge.id}_di`,
-          bpmnElement: element,
-          waypoint: waypoints,
-        }),
-      );
+      const newEdge = (moddle as any).create('bpmndi:BPMNEdge', {
+        id: `${edge.id}_di`,
+        bpmnElement: element,
+        waypoint: waypoints,
+      });
+      if (edgeLabelBounds) {
+        newEdge.label = (moddle as any).create('bpmndi:BPMNLabel', {
+          bounds: (moddle as any).create('dc:Bounds', edgeLabelBounds),
+        });
+      }
+      edges.push(newEdge);
     }
   }
 
@@ -739,11 +831,13 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
       const laidOut = await elk.layout(elkGraph);
 
       // Compute content bounding box from ELK output.
+      // Include any external label height below nodes (e.g. event / gateway labels).
       let contentWidth = 0;
       let contentHeight = 0;
       for (const child of laidOut.children ?? []) {
         contentWidth  = Math.max(contentWidth,  (child.x ?? 0) + (child.width  ?? 0));
-        contentHeight = Math.max(contentHeight, (child.y ?? 0) + (child.height ?? 0));
+        const lblH = (child.labels?.[0]?.height ?? 0);
+        contentHeight = Math.max(contentHeight, (child.y ?? 0) + (child.height ?? 0) + lblH);
       }
 
       const participantWidth  = POOL_LABEL_WIDTH + POOL_PADDING + contentWidth  + POOL_PADDING;
