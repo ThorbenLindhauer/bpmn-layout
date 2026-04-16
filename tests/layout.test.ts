@@ -692,6 +692,59 @@ describe('pools (collaboration)', () => {
   });
 });
 
+// ─── gateway inside event subprocess (collaboration) ─────────────────────────
+
+describe('gateway inside event subprocess (collaboration)', () => {
+  it('gateway edge endpoints land at a cardinal diamond tip (N/S/E/W)', async () => {
+    const result = await layout(fixture('gateway-subprocess.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const infoById = Object.fromEntries(
+      shapes.map((s: any) => [s.bpmnElement.id, { bounds: s.bounds, type: s.bpmnElement.$type }]),
+    );
+
+    for (const edge of edges) {
+      const srcId = edge.bpmnElement.sourceRef?.id ?? edge.bpmnElement.sourceRef;
+      const tgtId = edge.bpmnElement.targetRef?.id ?? edge.bpmnElement.targetRef;
+
+      if (GATEWAY_ELEMENT_TYPES.has(infoById[srcId]?.type)) {
+        const firstWp = edge.waypoint[0];
+        expect(
+          isAtCardinalDiamondTip(firstWp, infoById[srcId].bounds),
+          `${edge.bpmnElement.id} first wp (${firstWp.x},${firstWp.y}) is not at a cardinal tip of ${srcId} ` +
+          `(x:${infoById[srcId].bounds.x} y:${infoById[srcId].bounds.y} ` +
+          `w:${infoById[srcId].bounds.width} h:${infoById[srcId].bounds.height})`,
+        ).toBe(true);
+      }
+
+      if (GATEWAY_ELEMENT_TYPES.has(infoById[tgtId]?.type)) {
+        const lastWp = edge.waypoint[edge.waypoint.length - 1];
+        expect(
+          isAtCardinalDiamondTip(lastWp, infoById[tgtId].bounds),
+          `${edge.bpmnElement.id} last wp (${lastWp.x},${lastWp.y}) is not at a cardinal tip of ${tgtId} ` +
+          `(x:${infoById[tgtId].bounds.x} y:${infoById[tgtId].bounds.y} ` +
+          `w:${infoById[tgtId].bounds.width} h:${infoById[tgtId].bounds.height})`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('all edge segments are axis-aligned', async () => {
+    const result = await layout(fixture('gateway-subprocess.bpmn'));
+    const { edges } = await parseDi(result);
+    for (const edge of edges) {
+      const wps: Array<{ x: number; y: number }> = edge.waypoint;
+      for (let i = 0; i < wps.length - 1; i++) {
+        const a = wps[i];
+        const b = wps[i + 1];
+        expect(
+          Math.abs(a.y - b.y) <= 1 || Math.abs(a.x - b.x) <= 1,
+          `edge ${edge.bpmnElement.id} segment ${i}→${i + 1}: (${a.x},${a.y})→(${b.x},${b.y}) is not axis-aligned`,
+        ).toBe(true);
+      }
+    }
+  });
+});
+
 // ─── loop (cyclic graph) ─────────────────────────────────────────────────────
 
 describe('loop (cyclic graph)', () => {

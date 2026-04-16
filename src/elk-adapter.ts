@@ -8,6 +8,19 @@ import { buildElementMap } from './bpmn-utils.js';
 import { collectShapesAndEdges } from './di-builder.js';
 import { snapConnectionEndpoints, rebuildGatewayEdgePaths } from './gateway-post-processor.js';
 
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+function collectGatewayIds(flowElements: any[]): Set<string> {
+  const ids = new Set<string>();
+  for (const e of flowElements ?? []) {
+    if (GATEWAY_TYPES.has(e.$type as string)) ids.add(e.id as string);
+    if (e.flowElements?.length) {
+      for (const id of collectGatewayIds(e.flowElements)) ids.add(id);
+    }
+  }
+  return ids;
+}
+
 // ─── public API ──────────────────────────────────────────────────────────────
 
 export async function layoutBpmn(bpmnXml: string): Promise<string> {
@@ -98,11 +111,7 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
       const elkGraph = buildElkGraph(process, isExpandedMap);
 
       // Two-pass gateway layout (same logic as the non-pool path below).
-      const gatewayIds = new Set<string>(
-        ((process.flowElements as any[]) ?? [])
-          .filter((e: any) => GATEWAY_TYPES.has(e.$type as string))
-          .map((e: any) => e.id as string),
-      );
+      const gatewayIds = collectGatewayIds(process.flowElements ?? []);
       if (gatewayIds.size > 0) {
         const pass1 = await elk.layout(JSON.parse(JSON.stringify(elkGraph)) as ElkNode);
         assignGatewayPortsFromLayout(elkGraph, pass1, gatewayIds);
@@ -166,11 +175,7 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
       //
       // We clone the input for Pass 1 so ELK's internal mutations (if any) do not
       // affect the graph we modify for Pass 2.
-      const gatewayIds = new Set<string>(
-        ((process.flowElements as any[]) ?? [])
-          .filter((e: any) => GATEWAY_TYPES.has(e.$type as string))
-          .map((e: any) => e.id as string),
-      );
+      const gatewayIds = collectGatewayIds(process.flowElements ?? []);
 
       if (gatewayIds.size > 0) {
         const pass1 = await elk.layout(JSON.parse(JSON.stringify(elkGraph)) as ElkNode);

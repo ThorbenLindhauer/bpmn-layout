@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn2:definitions xmlns:bpmn2="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" id="_5SVkEIXnEeSmwfgVk-ryvQ" targetNamespace="http://camunda.org/schema/1.0/bpmn" exporter="Camunda Modeler" exporterVersion="5.45.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.1.0" xsi:schemaLocation="http://www.omg.org/spec/BPMN/20100524/MODEL BPMN20.xsd" camunda:diagramRelationId="8dc12e9b-19d8-4ead-b538-41e8a4a9b4b2">
+  <bpmn2:import importType="http://www.omg.org/spec/BPMN/20100524/MODEL" location="C.9.1.bpmn" namespace="http://bpmn.io/schema/bpmn/Definitions_1" />
+  <bpmn2:collaboration id="Collaboration_CustomerOnboarding">
+    <bpmn2:participant id="Participant_00" name="Customer Onboarding" processRef="customer_onboarding_en" />
+  </bpmn2:collaboration>
+  <bpmn2:process id="customer_onboarding_en" name="Customer Onboarding" isExecutable="true">
+    <bpmn2:extensionElements>
+      <zeebe:userTaskForm id="userTaskForm_0khiqpl">{
+  "components": [
+    {
+      "text": "&lt;img src=\"http://localhost:8080/camunda/online/banking/img/core-img/logo.png\"&gt;&lt;h2&gt;Instructions:&lt;/h2&gt;&lt;p&gt;Based on internal protocal and the given information below, tick the checkbox for 'Approved' if this application should be approved.&lt;/p&gt;&lt;p&gt; Otherwise, leave this checkbox blank.&lt;/p&gt;",
+      "type": "text",
+      "id": "Field_0e9521u"
+    },
+    {
+      "key": "applicationNumber",
+      "label": "Application Number",
+      "type": "textfield",
+      "id": "Field_1djmro0"
+    },
+    {
+      "key": "applicantName",
+      "label": "Applicant",
+      "type": "textfield",
+      "id": "Field_1ex9187"
+    },
+    {
+      "key": "age",
+      "label": "Current Age",
+      "type": "number",
+      "id": "Field_17vnd80"
+    },
+    {
+      "key": "employment",
+      "label": "Employment",
+      "type": "textfield",
+      "id": "Field_08mj5fv"
+    },
+    {
+      "key": "category",
+      "label": "Category",
+      "type": "textfield",
+      "id": "Field_1k7e84u"
+    },
+    {
+      "key": "priceIndication",
+      "label": "Price indication",
+      "type": "textfield",
+      "id": "Field_1d6bhc2"
+    },
+    {
+      "label": "Risks",
+      "type": "textfield",
+      "id": "Field_0qvctdt",
+      "key": "risksText",
+      "disabled": true
+    },
+    {
+      "key": "approved",
+      "label": "Approved",
+      "type": "checkbox",
+      "id": "Field_0hwfap9"
+    }
+  ],
+  "schemaVersion": 4,
+  "type": "default",
+  "id": "Form_0840o2b",
+  "executionPlatform": "Camunda Cloud",
+  "executionPlatformVersion": "1.1",
+  "exporter": {
+    "name": "Camunda Modeler",
+    "version": "5.0.0"
+  }
+}</zeebe:userTaskForm>
+    </bpmn2:extensionElements>
+    <bpmn2:subProcess id="Activity_0vp33kx" triggeredByEvent="true">
+      <bpmn2:startEvent id="StartMessageEvent_CancellationRequested" name="Cancelation requested">
+        <bpmn2:documentation>Customer onboarding cancellation message received</bpmn2:documentation>
+        <bpmn2:outgoing>Flow_12nmks0</bpmn2:outgoing>
+        <bpmn2:messageEventDefinition id="MessageEventDefinition_0tj9nv6" messageRef="Message_0dm6uaq" />
+      </bpmn2:startEvent>
+      <bpmn2:sequenceFlow id="Flow_12nmks0" sourceRef="StartMessageEvent_CancellationRequested" targetRef="ServiceTask_CancelApplication" />
+      <bpmn2:serviceTask id="ServiceTask_CancelApplication" name="Cancel application">
+        <bpmn2:documentation>Cancel application</bpmn2:documentation>
+        <bpmn2:extensionElements>
+          <zeebe:taskDefinition type="cancelApplication" />
+        </bpmn2:extensionElements>
+        <bpmn2:incoming>Flow_12nmks0</bpmn2:incoming>
+        <bpmn2:outgoing>Flow_19iipc6</bpmn2:outgoing>
+      </bpmn2:serviceTask>
+      <bpmn2:sequenceFlow id="Flow_19iipc6" sourceRef="ServiceTask_CancelApplication" targetRef="ParallelGateway_CancelApplication" />
+      <bpmn2:endEvent id="EndMessageEvent_InformCustomer" name="Customer notified about successful cancelation">
+        <bpmn2:documentation>Inform customer of a successful cancelation</bpmn2:documentation>
+        <bpmn2:extensionElements>
+          <zeebe:taskDefinition type="informCustomerSuccessfulCancelation" />
+        </bpmn2:extensionElements>
+        <bpmn2:incoming>Flow_0qrakss</bpmn2:incoming>
+        <bpmn2:messageEventDefinition id="MessageEventDefinition_0j82oqj" />
+      </bpmn2:endEvent>
+      <bpmn2:sequenceFlow id="Flow_0qrakss" sourceRef="ParallelGateway_CancelApplication" targetRef="EndMessageEvent_InformCustomer" />
+      <bpmn2:parallelGateway id="ParallelGateway_CancelApplication">
+        <bpmn2:incoming>Flow_19iipc6</bpmn2:incoming>
+        <bpmn2:outgoing>Flow_0qrakss</bpmn2:outgoing>
+        <bpmn2:outgoing>Flow_1jml1az</bpmn2:outgoing>
+      </bpmn2:parallelGateway>
+      <bpmn2:sequenceFlow id="Flow_1jml1az" sourceRef="ParallelGateway_CancelApplication" targetRef="EndMessageEvent_InformOperations" />
+      <bpmn2:endEvent id="EndMessageEvent_InformOperations" name="Operations Team notified about successful cancelation">
+        <bpmn2:documentation>Inform operations team of a successful cancelation</bpmn2:documentation>
+        <bpmn2:extensionElements>
+          <zeebe:taskDefinition type="informOperationsSuccessfulCancelation" />
+        </bpmn2:extensionElements>
+        <bpmn2:incoming>Flow_1jml1az</bpmn2:incoming>
+        <bpmn2:messageEventDefinition id="MessageEventDefinition_1qmp27r" />
+      </bpmn2:endEvent>
+    </bpmn2:subProcess>
+  </bpmn2:process>
+  <bpmn2:message id="Message_0fvpzfg" name="Message_DocumentRequested">
+    <bpmn2:extensionElements>
+      <zeebe:subscription correlationKey="= documentReferenceId" />
+    </bpmn2:extensionElements>
+  </bpmn2:message>
+  <bpmn2:error id="Error_01bezxs" name="Error_FraudDetected" errorCode="02" />
+  <bpmn2:error id="Error_1u68flh" name="Error_Timeout" errorCode="00" />
+  <bpmn2:message id="Message_0dm6uaq" name="Message_CancellationRequested">
+    <bpmn2:extensionElements>
+      <zeebe:subscription correlationKey="=01" />
+    </bpmn2:extensionElements>
+  </bpmn2:message>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Collaboration_CustomerOnboarding">
+      <bpmndi:BPMNShape id="Participant_0477s11_di" bpmnElement="Participant_00" isHorizontal="true">
+        <dc:Bounds x="156" y="71" width="1470" height="599" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_0q5qosr_di" bpmnElement="Activity_0vp33kx" isExpanded="true">
+        <dc:Bounds x="200" y="400" width="440" height="250" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_1xf7lj1_di" bpmnElement="StartMessageEvent_CancellationRequested">
+        <dc:Bounds x="220" y="444" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="209" y="487" width="59" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_0kuhdn6_di" bpmnElement="ServiceTask_CancelApplication">
+        <dc:Bounds x="310" y="422" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_1ck9hv0_di" bpmnElement="EndMessageEvent_InformCustomer">
+        <dc:Bounds x="552" y="444" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="527" y="487" width="87" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_1a6njvb_di" bpmnElement="ParallelGateway_CancelApplication">
+        <dc:Bounds x="465" y="437" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_0rel1ew_di" bpmnElement="EndMessageEvent_InformOperations">
+        <dc:Bounds x="552" y="552" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="528" y="595" width="84" height="53" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_12nmks0_di" bpmnElement="Flow_12nmks0">
+        <di:waypoint x="256" y="462" />
+        <di:waypoint x="310" y="462" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_19iipc6_di" bpmnElement="Flow_19iipc6">
+        <di:waypoint x="410" y="462" />
+        <di:waypoint x="465" y="462" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0qrakss_di" bpmnElement="Flow_0qrakss">
+        <di:waypoint x="515" y="462" />
+        <di:waypoint x="552" y="462" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_1jml1az_di" bpmnElement="Flow_1jml1az">
+        <di:waypoint x="490" y="487" />
+        <di:waypoint x="490" y="570" />
+        <di:waypoint x="552" y="570" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn2:definitions>
