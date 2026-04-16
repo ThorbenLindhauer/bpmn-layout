@@ -151,6 +151,13 @@ export function rebuildGatewayEdgePaths(
 
         if (tipY !== undefined) {
           const skip = new Set<string>([srcId!, ...(tgtId ? [tgtId] : [])]);
+          // Skip ancestor containers (elements whose bounds fully enclose the gateway).
+          for (const [id, box] of boundsMap) {
+            if (!skip.has(id) &&
+                box.x <= gwB.x && box.y <= gwB.y &&
+                box.x + box.width  >= gwB.x + gwB.width &&
+                box.y + box.height >= gwB.y + gwB.height) skip.add(id);
+          }
           const vertLo = Math.min(tipY, farEnd.y);
           const vertHi = Math.max(tipY, farEnd.y);
           const horizLo = Math.min(gwCx, farEnd.x);
@@ -186,6 +193,13 @@ export function rebuildGatewayEdgePaths(
 
         if (tipY !== undefined) {
           const skip = new Set<string>([...(srcId ? [srcId] : []), tgtId!]);
+          // Skip ancestor containers (elements whose bounds fully enclose the gateway).
+          for (const [id, box] of boundsMap) {
+            if (!skip.has(id) &&
+                box.x <= gwB.x && box.y <= gwB.y &&
+                box.x + box.width  >= gwB.x + gwB.width &&
+                box.y + box.height >= gwB.y + gwB.height) skip.add(id);
+          }
           const horizLo = Math.min(farEnd.x, gwCx);
           const horizHi = Math.max(farEnd.x, gwCx);
           const vertLo = Math.min(farEnd.y, tipY);
