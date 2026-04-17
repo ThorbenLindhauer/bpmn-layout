@@ -55,6 +55,12 @@ export const POOL_LABEL_WIDTH = 30;   // width of the pool name label column on 
 export const POOL_PADDING     = 20;   // padding inside each pool around the ELK content
 export const PARTICIPANT_GAP  = 20;   // vertical gap between consecutive pools
 
+// ─── lane layout constants ────────────────────────────────────────────────────
+
+export const LANE_LABEL_WIDTH = 30;   // width of the lane name label column
+export const LANE_PADDING     = 20;   // padding inside each lane (passed to ELK via elk.padding)
+export const MIN_LANE_HEIGHT  = 150;  // minimum lane height (matches bpmn:Lane default size)
+
 export function sizeOf(element: any) {
   return ELEMENT_SIZES[element.$type as string] ?? DEFAULT_SIZE;
 }

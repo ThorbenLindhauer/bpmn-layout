@@ -2,10 +2,10 @@ import BpmnModdle from 'bpmn-moddle';
 import ELK from 'elkjs/lib/elk.bundled.js';
 import type { ElkNode } from 'elkjs';
 import { type Bounds, GATEWAY_TYPES } from './bpmn-types.js';
-import { POOL_LABEL_WIDTH, POOL_PADDING, PARTICIPANT_GAP, sizeOf } from './bpmn-sizing.js';
-import { buildElkGraph, assignGatewayPortsFromLayout } from './elk-graph-builder.js';
-import { buildElementMap } from './bpmn-utils.js';
-import { collectShapesAndEdges } from './di-builder.js';
+import { LANE_LABEL_WIDTH, MIN_LANE_HEIGHT, POOL_LABEL_WIDTH, POOL_PADDING, PARTICIPANT_GAP, sizeOf } from './bpmn-sizing.js';
+import { buildElkGraph, buildElkGraphForLanes, assignGatewayPortsFromLayout } from './elk-graph-builder.js';
+import { buildElementMap, getLanes } from './bpmn-utils.js';
+import { collectShapesAndEdges, collectLanedShapesAndEdges } from './di-builder.js';
 import { snapConnectionEndpoints, rebuildGatewayEdgePaths } from './gateway-post-processor.js';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -108,86 +108,165 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
         continue;
       }
 
-      const elkGraph = buildElkGraph(process, isExpandedMap);
+      const lanes = getLanes(process);
 
-      // Two-pass gateway layout (same logic as the non-pool path below).
-      const gatewayIds = collectGatewayIds(process.flowElements ?? []);
-      if (gatewayIds.size > 0) {
-        const pass1 = await elk.layout(JSON.parse(JSON.stringify(elkGraph)) as ElkNode);
-        assignGatewayPortsFromLayout(elkGraph, pass1, gatewayIds);
-      }
-
-      const laidOut = await elk.layout(elkGraph);
-
-      // Compute content bounding box from ELK output.
-      // Include any external label height below nodes (e.g. event / gateway labels).
-      let contentWidth = 0;
-      let contentHeight = 0;
-      for (const child of laidOut.children ?? []) {
-        contentWidth  = Math.max(contentWidth,  (child.x ?? 0) + (child.width  ?? 0));
-        const lblH = (child.labels?.[0]?.height ?? 0);
-        contentHeight = Math.max(contentHeight, (child.y ?? 0) + (child.height ?? 0) + lblH);
-      }
-
-      const participantWidth  = POOL_LABEL_WIDTH + POOL_PADDING + contentWidth  + POOL_PADDING;
-      const participantHeight =                    POOL_PADDING + contentHeight + POOL_PADDING;
-      const participantBounds = { x: 0, y: currentY, width: participantWidth, height: participantHeight };
-      boundsMap.set(participant.id as string, participantBounds);
-
-      // Emit BPMNShape for the participant (pool).
-      const existingParticipantShape = existingShapes.get(participant.id as string);
-      if (existingParticipantShape) {
-        existingParticipantShape.bounds = (moddle as any).create('dc:Bounds', participantBounds);
-        allShapes.push(existingParticipantShape);
-      } else {
-        allShapes.push(
-          (moddle as any).create('bpmndi:BPMNShape', {
-            id: `${participant.id as string}_di`,
-            bpmnElement: participant,
-            bounds: (moddle as any).create('dc:Bounds', participantBounds),
-            isHorizontal: true,
-          }),
+      if (lanes.length > 0) {
+        // ── Pool with lanes: hierarchical ELK compound-node layout ────────────
+        const elkGraph = buildElkGraphForLanes(
+          process.id as string, lanes, process.flowElements ?? [], isExpandedMap,
         );
+
+        const gatewayIds = collectGatewayIds(lanes.flatMap((l: any) => l.flowNodeRef ?? []));
+        if (gatewayIds.size > 0) {
+          const pass1 = await elk.layout(JSON.parse(JSON.stringify(elkGraph)) as ElkNode);
+          assignGatewayPortsFromLayout(elkGraph, pass1, gatewayIds);
+        }
+
+        const laidOut = await elk.layout(elkGraph);
+
+        // All lanes share the same width — use the maximum ELK-computed lane width.
+        const maxLaneWidth = Math.max(0, ...(laidOut.children ?? []).map((c) => c.width ?? 0));
+        const poolWidth = POOL_LABEL_WIDTH + LANE_LABEL_WIDTH + maxLaneWidth;
+        const totalHeight = (laidOut.children ?? []).reduce(
+          (sum, c) => sum + Math.max(MIN_LANE_HEIGHT, c.height ?? 0), 0,
+        );
+        const participantBounds = { x: 0, y: currentY, width: poolWidth, height: totalHeight };
+        boundsMap.set(participant.id as string, participantBounds);
+
+        const existingParticipantShape = existingShapes.get(participant.id as string);
+        if (existingParticipantShape) {
+          existingParticipantShape.bounds = (moddle as any).create('dc:Bounds', participantBounds);
+          allShapes.push(existingParticipantShape);
+        } else {
+          allShapes.push(
+            (moddle as any).create('bpmndi:BPMNShape', {
+              id: `${participant.id as string}_di`,
+              bpmnElement: participant,
+              bounds: (moddle as any).create('dc:Bounds', participantBounds),
+              isHorizontal: true,
+            }),
+          );
+        }
+
+        const contentOffsetX = POOL_LABEL_WIDTH + LANE_LABEL_WIDTH;
+        const { laneShapes, nodeShapes, allEdges: laneEdges } = collectLanedShapesAndEdges(
+          laidOut, moddle, elementMap, boundsMap,
+          existingShapes, existingEdges, poolWidth, contentOffsetX, currentY,
+        );
+        allShapes.push(...laneShapes, ...nodeShapes);
+        allEdges.push(...laneEdges);
+
+        currentY += totalHeight + PARTICIPANT_GAP;
+      } else {
+        // ── Pool without lanes: flat ELK layout ───────────────────────────────
+        const elkGraph = buildElkGraph(process, isExpandedMap);
+
+        // Two-pass gateway layout (same logic as the non-pool path below).
+        const gatewayIds = collectGatewayIds(process.flowElements ?? []);
+        if (gatewayIds.size > 0) {
+          const pass1 = await elk.layout(JSON.parse(JSON.stringify(elkGraph)) as ElkNode);
+          assignGatewayPortsFromLayout(elkGraph, pass1, gatewayIds);
+        }
+
+        const laidOut = await elk.layout(elkGraph);
+
+        // Compute content bounding box from ELK output.
+        // Include any external label height below nodes (e.g. event / gateway labels).
+        let contentWidth = 0;
+        let contentHeight = 0;
+        for (const child of laidOut.children ?? []) {
+          contentWidth  = Math.max(contentWidth,  (child.x ?? 0) + (child.width  ?? 0));
+          const lblH = (child.labels?.[0]?.height ?? 0);
+          contentHeight = Math.max(contentHeight, (child.y ?? 0) + (child.height ?? 0) + lblH);
+        }
+
+        const participantWidth  = POOL_LABEL_WIDTH + POOL_PADDING + contentWidth  + POOL_PADDING;
+        const participantHeight =                    POOL_PADDING + contentHeight + POOL_PADDING;
+        const participantBounds = { x: 0, y: currentY, width: participantWidth, height: participantHeight };
+        boundsMap.set(participant.id as string, participantBounds);
+
+        // Emit BPMNShape for the participant (pool).
+        const existingParticipantShape = existingShapes.get(participant.id as string);
+        if (existingParticipantShape) {
+          existingParticipantShape.bounds = (moddle as any).create('dc:Bounds', participantBounds);
+          allShapes.push(existingParticipantShape);
+        } else {
+          allShapes.push(
+            (moddle as any).create('bpmndi:BPMNShape', {
+              id: `${participant.id as string}_di`,
+              bpmnElement: participant,
+              bounds: (moddle as any).create('dc:Bounds', participantBounds),
+              isHorizontal: true,
+            }),
+          );
+        }
+
+        // Collect process shapes/edges, offset into the pool interior.
+        const offsetX = POOL_LABEL_WIDTH + POOL_PADDING;
+        const offsetY = currentY + POOL_PADDING;
+        const { shapes, edges } = collectShapesAndEdges(
+          laidOut, moddle, elementMap, boundsMap, offsetX, offsetY, existingShapes, existingEdges,
+        );
+        allShapes.push(...shapes);
+        allEdges.push(...edges);
+
+        currentY += participantHeight + PARTICIPANT_GAP;
       }
-
-      // Collect process shapes/edges, offset into the pool interior.
-      const offsetX = POOL_LABEL_WIDTH + POOL_PADDING;
-      const offsetY = currentY + POOL_PADDING;
-      const { shapes, edges } = collectShapesAndEdges(
-        laidOut, moddle, elementMap, boundsMap, offsetX, offsetY, existingShapes, existingEdges,
-      );
-      allShapes.push(...shapes);
-      allEdges.push(...edges);
-
-      currentY += participantHeight + PARTICIPANT_GAP;
     }
   } else {
     // ── Plain process layout (no collaboration) ───────────────────────────────
     for (const process of processes) {
-      const elkGraph = buildElkGraph(process, isExpandedMap);
+      const lanes = getLanes(process);
 
-      // Two-pass layout for processes that contain gateways:
-      //
-      // Pass 1 — let ELK auto-assign ports and establish rough node positions.
-      // Pass 2 — re-assign each gateway edge to the cardinal port (N/S/E/W) that
-      //           faces the connected node, then re-run ELK so it plans routes
-      //           from/to the exact diamond vertices.
-      //
-      // We clone the input for Pass 1 so ELK's internal mutations (if any) do not
-      // affect the graph we modify for Pass 2.
-      const gatewayIds = collectGatewayIds(process.flowElements ?? []);
+      if (lanes.length > 0) {
+        // ── Plain process with lanes ─────────────────────────────────────────
+        const elkGraph = buildElkGraphForLanes(
+          process.id as string, lanes, process.flowElements ?? [], isExpandedMap,
+        );
 
-      if (gatewayIds.size > 0) {
-        const pass1 = await elk.layout(JSON.parse(JSON.stringify(elkGraph)) as ElkNode);
-        assignGatewayPortsFromLayout(elkGraph, pass1, gatewayIds);
+        const gatewayIds = collectGatewayIds(lanes.flatMap((l: any) => l.flowNodeRef ?? []));
+        if (gatewayIds.size > 0) {
+          const pass1 = await elk.layout(JSON.parse(JSON.stringify(elkGraph)) as ElkNode);
+          assignGatewayPortsFromLayout(elkGraph, pass1, gatewayIds);
+        }
+
+        const laidOut = await elk.layout(elkGraph);
+
+        const maxLaneWidth = Math.max(0, ...(laidOut.children ?? []).map((c) => c.width ?? 0));
+        const laneWidth = LANE_LABEL_WIDTH + maxLaneWidth;
+        const { laneShapes, nodeShapes, allEdges: laneEdges } = collectLanedShapesAndEdges(
+          laidOut, moddle, elementMap, boundsMap,
+          existingShapes, existingEdges, laneWidth, LANE_LABEL_WIDTH, 0,
+        );
+        allShapes.push(...laneShapes, ...nodeShapes);
+        allEdges.push(...laneEdges);
+      } else {
+        // ── Plain process without lanes ──────────────────────────────────────
+        const elkGraph = buildElkGraph(process, isExpandedMap);
+
+        // Two-pass layout for processes that contain gateways:
+        //
+        // Pass 1 — let ELK auto-assign ports and establish rough node positions.
+        // Pass 2 — re-assign each gateway edge to the cardinal port (N/S/E/W) that
+        //           faces the connected node, then re-run ELK so it plans routes
+        //           from/to the exact diamond vertices.
+        //
+        // We clone the input for Pass 1 so ELK's internal mutations (if any) do not
+        // affect the graph we modify for Pass 2.
+        const gatewayIds = collectGatewayIds(process.flowElements ?? []);
+
+        if (gatewayIds.size > 0) {
+          const pass1 = await elk.layout(JSON.parse(JSON.stringify(elkGraph)) as ElkNode);
+          assignGatewayPortsFromLayout(elkGraph, pass1, gatewayIds);
+        }
+
+        const laidOut = await elk.layout(elkGraph);
+        const { shapes, edges } = collectShapesAndEdges(
+          laidOut, moddle, elementMap, boundsMap, 0, 0, existingShapes, existingEdges,
+        );
+        allShapes.push(...shapes);
+        allEdges.push(...edges);
       }
-
-      const laidOut = await elk.layout(elkGraph);
-      const { shapes, edges } = collectShapesAndEdges(
-        laidOut, moddle, elementMap, boundsMap, 0, 0, existingShapes, existingEdges,
-      );
-      allShapes.push(...shapes);
-      allEdges.push(...edges);
     }
   }
 

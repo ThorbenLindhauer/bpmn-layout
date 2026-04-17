@@ -6,7 +6,17 @@ export function buildElementMap(elements: any[], map = new Map<string, any>()): 
     if (el.id) map.set(el.id as string, el);
     if (el.flowElements) buildElementMap(el.flowElements, map);
     if (el.participants) buildElementMap(el.participants, map);
+    if (el.laneSets) {
+      for (const ls of el.laneSets as any[]) buildElementMap(ls.lanes ?? [], map);
+    }
     if (el.lanes) buildElementMap(el.lanes, map);
   }
   return map;
+}
+
+// ─── lane helpers ─────────────────────────────────────────────────────────────
+
+/** Returns ordered Lane objects from process.laneSets[0], or [] if none. */
+export function getLanes(process: any): any[] {
+  return (process.laneSets as any[] | undefined)?.[0]?.lanes ?? [];
 }

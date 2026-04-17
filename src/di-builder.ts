@@ -1,11 +1,11 @@
 import BpmnModdle from 'bpmn-moddle';
 import type { ElkNode, ElkExtendedEdge } from 'elkjs';
 import { type Bounds } from './bpmn-types.js';
-import { sizeOf } from './bpmn-sizing.js';
+import { MIN_LANE_HEIGHT, sizeOf } from './bpmn-sizing.js';
 
 // ─── DI building ─────────────────────────────────────────────────────────────
 
-function extractWaypoints(edge: ElkExtendedEdge): Array<{ x: number; y: number }> {
+export function extractWaypoints(edge: ElkExtendedEdge): Array<{ x: number; y: number }> {
   const points: Array<{ x: number; y: number }> = [];
   for (const section of (edge as any).sections ?? []) {
     points.push(section.startPoint);
@@ -197,4 +197,135 @@ export function collectShapesAndEdges(
   }
 
   return { shapes, edges };
+}
+
+/**
+ * Compute orthogonal waypoints for a cross-lane sequence flow.
+ * Exits the source element from the side facing the target and enters the
+ * target from the opposite side, using a midpoint X for the bend.
+ */
+function routeCrossLaneWaypoints(
+  src: Bounds,
+  tgt: Bounds,
+  moddle: any,
+): any[] {
+  const srcCx = src.x + src.width / 2;
+  const tgtCx = tgt.x + tgt.width / 2;
+  const srcCy = src.y + src.height / 2;
+  const tgtCy = tgt.y + tgt.height / 2;
+  const forward = tgtCx >= srcCx;
+  const startX  = forward ? src.x + src.width : src.x;
+  const endX    = forward ? tgt.x             : tgt.x + tgt.width;
+  const midX    = (startX + endX) / 2;
+  const pt = (x: number, y: number) =>
+    (moddle as any).create('dc:Point', { x: Math.round(x), y: Math.round(y) });
+  if (Math.abs(srcCy - tgtCy) <= 1) return [pt(startX, srcCy), pt(endX, tgtCy)];
+  return [pt(startX, srcCy), pt(midX, srcCy), pt(midX, tgtCy), pt(endX, tgtCy)];
+}
+
+/**
+ * Collect BPMNShape/BPMNEdge DI elements from an ELK output that was produced
+ * by `buildElkGraphForLanes`.  The root node's children are lane compound nodes;
+ * each compound's children are the actual flow elements.
+ *
+ * Lane shapes span the full pool width (x=0).  Element shapes are offset by
+ * contentOffsetX so they sit inside the lane's content area (to the right of
+ * the pool and lane label strips).
+ *
+ * Lane Y positions are derived by accumulating adjusted lane heights in document
+ * order rather than using ELK's placement directly, which keeps lanes contiguous
+ * after any MIN_LANE_HEIGHT adjustment.
+ *
+ * Cross-lane edges live at the root level; ELK does not always produce usable
+ * sections for hierarchical edges, so we route them manually using boundsMap
+ * after all element positions have been collected.
+ */
+export function collectLanedShapesAndEdges(
+  laidOutRoot: ElkNode,
+  moddle: BpmnModdle,
+  elementMap: Map<string, any>,
+  boundsMap: Map<string, Bounds>,
+  existingShapes: Map<string, any>,
+  existingEdges: Map<string, any>,
+  poolWidth: number,
+  contentOffsetX: number,
+  originY: number,
+): { laneShapes: any[]; nodeShapes: any[]; allEdges: any[] } {
+  const laneShapes: any[] = [];
+  const nodeShapes: any[] = [];
+  const allEdges: any[] = [];
+
+  // Accumulate lane Y in document order (independent of ELK's laneNode.y so that
+  // MIN_LANE_HEIGHT adjustments don't break alignment between lanes).
+  let cumulativeLaneY = originY;
+
+  for (const laneNode of laidOutRoot.children ?? []) {
+    const laneAbsY = cumulativeLaneY;
+    const laneHeight = Math.max(MIN_LANE_HEIGHT, laneNode.height ?? 0);
+    cumulativeLaneY += laneHeight;
+
+    const laneBounds: Bounds = { x: 0, y: laneAbsY, width: poolWidth, height: laneHeight };
+    boundsMap.set(laneNode.id, laneBounds);
+
+    const existingLane = existingShapes.get(laneNode.id);
+    const bpmnLane = elementMap.get(laneNode.id);
+    if (existingLane) {
+      existingLane.bounds = (moddle as any).create('dc:Bounds', laneBounds);
+      laneShapes.push(existingLane);
+    } else if (bpmnLane) {
+      laneShapes.push(
+        (moddle as any).create('bpmndi:BPMNShape', {
+          id: `${laneNode.id}_di`,
+          bpmnElement: bpmnLane,
+          bounds: (moddle as any).create('dc:Bounds', laneBounds),
+          isHorizontal: true,
+        }),
+      );
+    }
+
+    // Elements and intra-lane edges inside this lane compound node.
+    // laneNode.x is the compound's X within the root (typically 0 for direction=DOWN).
+    const elemOffsetX = contentOffsetX + (laneNode.x ?? 0);
+    const { shapes, edges } = collectShapesAndEdges(
+      laneNode, moddle, elementMap, boundsMap,
+      elemOffsetX, laneAbsY, existingShapes, existingEdges,
+    );
+    nodeShapes.push(...shapes);
+    allEdges.push(...edges);
+  }
+
+  // Cross-lane edges are at the root level.  ELK does not reliably produce
+  // sections for hierarchical edges connecting nodes inside compound children,
+  // so we compute orthogonal waypoints manually from the element bounds that
+  // were populated in the loop above.
+  for (const edge of (laidOutRoot.edges ?? []) as ElkExtendedEdge[]) {
+    const element = elementMap.get(edge.id);
+    if (!element) continue;
+
+    const rawSrc = (edge.sources[0] ?? '').replace(/__[NSEW]$/, '');
+    const rawTgt = (edge.targets[0] ?? '').replace(/__[NSEW]$/, '');
+    const srcBounds = boundsMap.get(rawSrc);
+    const tgtBounds = boundsMap.get(rawTgt);
+    if (!srcBounds || !tgtBounds) continue;
+
+    const waypoints = routeCrossLaneWaypoints(srcBounds, tgtBounds, moddle);
+
+    const existingEdge = existingEdges.get(edge.id);
+    if (existingEdge) {
+      existingEdge.waypoint = waypoints;
+      // Clear any stale label position — we don't recompute cross-lane label placement.
+      if (existingEdge.label?.bounds) existingEdge.label.bounds = undefined;
+      allEdges.push(existingEdge);
+    } else {
+      allEdges.push(
+        (moddle as any).create('bpmndi:BPMNEdge', {
+          id: `${edge.id}_di`,
+          bpmnElement: element,
+          waypoint: waypoints,
+        }),
+      );
+    }
+  }
+
+  return { laneShapes, nodeShapes, allEdges };
 }

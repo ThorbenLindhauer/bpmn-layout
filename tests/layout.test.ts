@@ -760,3 +760,180 @@ describe('loop (cyclic graph)', () => {
     expect(edges).toHaveLength(4);
   });
 });
+
+// ─── pool with lanes ──────────────────────────────────────────────────────────
+
+describe('pool with lanes', () => {
+  it('creates a BPMNShape for each lane', async () => {
+    const result = await layout(fixture('pool-with-lanes.bpmn'));
+    const { shapes } = await parseDi(result);
+    const ids = shapes.map((s: any) => s.bpmnElement.id);
+    expect(ids).toContain('lane1');
+    expect(ids).toContain('lane2');
+  });
+
+  it('lane shapes have isHorizontal=true', async () => {
+    const result = await layout(fixture('pool-with-lanes.bpmn'));
+    const { shapes } = await parseDi(result);
+    for (const s of shapes.filter((s: any) => ['lane1', 'lane2'].includes(s.bpmnElement.id))) {
+      expect(s.isHorizontal).toBe(true);
+    }
+  });
+
+  it('lane shapes have positive dimensions', async () => {
+    const result = await layout(fixture('pool-with-lanes.bpmn'));
+    const { shapes } = await parseDi(result);
+    for (const s of shapes.filter((s: any) => ['lane1', 'lane2'].includes(s.bpmnElement.id))) {
+      expect(s.bounds.width).toBeGreaterThan(0);
+      expect(s.bounds.height).toBeGreaterThan(0);
+    }
+  });
+
+  it('all lanes have the same width', async () => {
+    const result = await layout(fixture('pool-with-lanes.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    expect(byId['lane1'].width).toBe(byId['lane2'].width);
+  });
+
+  it('lane shapes start at x=0', async () => {
+    const result = await layout(fixture('pool-with-lanes.bpmn'));
+    const { shapes } = await parseDi(result);
+    for (const s of shapes.filter((s: any) => ['lane1', 'lane2'].includes(s.bpmnElement.id))) {
+      expect(s.bounds.x).toBe(0);
+    }
+  });
+
+  it('lane2 is stacked below lane1', async () => {
+    const result = await layout(fixture('pool-with-lanes.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    expect(byId['lane2'].y).toBeGreaterThanOrEqual(byId['lane1'].y + byId['lane1'].height);
+  });
+
+  it('pool and lane shapes share the same width', async () => {
+    const result = await layout(fixture('pool-with-lanes.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    expect(byId['pool1'].width).toBe(byId['lane1'].width);
+    expect(byId['pool1'].width).toBe(byId['lane2'].width);
+  });
+
+  it('pool height equals sum of lane heights', async () => {
+    const result = await layout(fixture('pool-with-lanes.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    expect(byId['pool1'].height).toBe(byId['lane1'].height + byId['lane2'].height);
+  });
+
+  it('creates edges for all sequence flows including cross-lane sf2', async () => {
+    const result = await layout(fixture('pool-with-lanes.bpmn'));
+    const { edges } = await parseDi(result);
+    const ids = edges.map((e: any) => e.bpmnElement.id);
+    expect(ids).toContain('sf1');
+    expect(ids).toContain('sf2');
+    expect(ids).toContain('sf3');
+  });
+
+  it('cross-lane edge sf2 has orthogonal waypoints', async () => {
+    const result = await layout(fixture('pool-with-lanes.bpmn'));
+    const { edges } = await parseDi(result);
+    const sf2 = edges.find((e: any) => e.bpmnElement.id === 'sf2');
+    expect(sf2).toBeDefined();
+    expect(sf2.waypoint.length).toBeGreaterThanOrEqual(2);
+    const wps: Array<{ x: number; y: number }> = sf2.waypoint;
+    for (let i = 0; i < wps.length - 1; i++) {
+      const a = wps[i], b = wps[i + 1];
+      expect(
+        Math.abs(a.y - b.y) <= 1 || Math.abs(a.x - b.x) <= 1,
+        `sf2 segment ${i}→${i + 1}: (${a.x},${a.y})→(${b.x},${b.y}) is not axis-aligned`,
+      ).toBe(true);
+    }
+  });
+
+  it('flow nodes are positioned inside their containing lane bounds', async () => {
+    const result = await layout(fixture('pool-with-lanes.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+
+    for (const [nodeId, laneId] of [
+      ['start1', 'lane1'], ['task1', 'lane1'],
+      ['task2', 'lane2'], ['end1', 'lane2'],
+    ] as const) {
+      const lane = byId[laneId];
+      const node = byId[nodeId];
+      const nodeCy = node.y + node.height / 2;
+      expect(nodeCy, `${nodeId} center Y should be inside ${laneId}`).toBeGreaterThan(lane.y);
+      expect(nodeCy, `${nodeId} center Y should be inside ${laneId}`).toBeLessThan(lane.y + lane.height);
+    }
+  });
+});
+
+// ─── plain process with lanes ─────────────────────────────────────────────────
+
+describe('plain process with lanes', () => {
+  it('creates a BPMNShape for each lane', async () => {
+    const result = await layout(fixture('plain-process-with-lanes.bpmn'));
+    const { shapes } = await parseDi(result);
+    const ids = shapes.map((s: any) => s.bpmnElement.id);
+    expect(ids).toContain('lane1');
+    expect(ids).toContain('lane2');
+  });
+
+  it('lane shapes have isHorizontal=true', async () => {
+    const result = await layout(fixture('plain-process-with-lanes.bpmn'));
+    const { shapes } = await parseDi(result);
+    for (const s of shapes.filter((s: any) => ['lane1', 'lane2'].includes(s.bpmnElement.id))) {
+      expect(s.isHorizontal).toBe(true);
+    }
+  });
+
+  it('lane2 is stacked below lane1', async () => {
+    const result = await layout(fixture('plain-process-with-lanes.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    expect(byId['lane2'].y).toBeGreaterThanOrEqual(byId['lane1'].y + byId['lane1'].height);
+  });
+
+  it('flow nodes are positioned inside their containing lane bounds', async () => {
+    const result = await layout(fixture('plain-process-with-lanes.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+
+    for (const [nodeId, laneId] of [
+      ['start1', 'lane1'], ['task1', 'lane1'],
+      ['task2', 'lane2'], ['end1', 'lane2'],
+    ] as const) {
+      const lane = byId[laneId];
+      const node = byId[nodeId];
+      const nodeCy = node.y + node.height / 2;
+      expect(nodeCy, `${nodeId} center Y should be inside ${laneId}`).toBeGreaterThan(lane.y);
+      expect(nodeCy, `${nodeId} center Y should be inside ${laneId}`).toBeLessThan(lane.y + lane.height);
+    }
+  });
+
+  it('creates edges for all sequence flows including cross-lane sf2', async () => {
+    const result = await layout(fixture('plain-process-with-lanes.bpmn'));
+    const { edges } = await parseDi(result);
+    const ids = edges.map((e: any) => e.bpmnElement.id);
+    expect(ids).toContain('sf1');
+    expect(ids).toContain('sf2');
+    expect(ids).toContain('sf3');
+  });
+
+  it('cross-lane edge sf2 has orthogonal waypoints', async () => {
+    const result = await layout(fixture('plain-process-with-lanes.bpmn'));
+    const { edges } = await parseDi(result);
+    const sf2 = edges.find((e: any) => e.bpmnElement.id === 'sf2');
+    expect(sf2).toBeDefined();
+    expect(sf2.waypoint.length).toBeGreaterThanOrEqual(2);
+    const wps: Array<{ x: number; y: number }> = sf2.waypoint;
+    for (let i = 0; i < wps.length - 1; i++) {
+      const a = wps[i], b = wps[i + 1];
+      expect(
+        Math.abs(a.y - b.y) <= 1 || Math.abs(a.x - b.x) <= 1,
+        `sf2 segment ${i}→${i + 1}: (${a.x},${a.y})→(${b.x},${b.y}) is not axis-aligned`,
+      ).toBe(true);
+    }
+  });
+});

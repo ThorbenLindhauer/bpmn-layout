@@ -1,6 +1,6 @@
 import type { ElkNode, ElkExtendedEdge } from 'elkjs';
 import { EDGE_TYPES, GATEWAY_TYPES, isFlowNode } from './bpmn-types.js';
-import { DEFAULT_SIZE, EXTERNAL_LABEL_TYPES, estimateLabelSize, sizeOf } from './bpmn-sizing.js';
+import { DEFAULT_SIZE, EXTERNAL_LABEL_TYPES, LANE_PADDING, estimateLabelSize, sizeOf } from './bpmn-sizing.js';
 
 // ─── ELK layout options ───────────────────────────────────────────────────────
 
@@ -151,6 +151,91 @@ function buildElkChildren(
 export function buildElkGraph(process: any, isExpandedMap: Map<string, boolean> = new Map()): ElkNode {
   const { children, edges } = buildElkChildren(process, isExpandedMap);
   return { id: process.id as string, layoutOptions: ELK_LAYOUT_OPTIONS, children, edges };
+}
+
+/**
+ * Build an ELK graph for a process that contains lanes.
+ *
+ * Each lane becomes an ELK compound node (direction=RIGHT) so its elements
+ * are laid out left-to-right inside the lane.  The root graph uses
+ * direction=DOWN so the lane compounds are stacked vertically.
+ *
+ * Intra-lane sequence flows are edges inside the corresponding lane compound.
+ * Cross-lane sequence flows are edges at the root level — ELK routes them
+ * holistically, which means it can optimise element positions within each lane
+ * knowing about cross-lane connections.
+ */
+export function buildElkGraphForLanes(
+  processId: string,
+  lanes: any[],
+  allFlowElements: any[],
+  isExpandedMap: Map<string, boolean>,
+): ElkNode {
+  const laneIdSets = lanes.map((lane: any) =>
+    new Set<string>((lane.flowNodeRef ?? []).map((n: any) => n.id as string)),
+  );
+
+  const laneNodes: ElkNode[] = lanes.map((lane: any, i: number) => {
+    const laneIds = laneIdSets[i];
+
+    const laneFlowElements = allFlowElements.filter((e: any) => {
+      if (EDGE_TYPES.has(e.$type as string)) {
+        return laneIds.has(e.sourceRef?.id) && laneIds.has(e.targetRef?.id);
+      }
+      return laneIds.has(e.id as string);
+    });
+
+    const { children, edges } = buildElkChildren(
+      { id: lane.id as string, flowElements: laneFlowElements },
+      isExpandedMap,
+    );
+
+    return {
+      id: lane.id as string,
+      layoutOptions: {
+        ...ELK_LAYOUT_OPTIONS,
+        'elk.padding': `[top=${LANE_PADDING},left=${LANE_PADDING},bottom=${LANE_PADDING},right=${LANE_PADDING}]`,
+      },
+      children,
+      edges,
+    };
+  });
+
+  const crossLaneEdges: ElkExtendedEdge[] = allFlowElements
+    .filter((e: any) => {
+      if (!EDGE_TYPES.has(e.$type as string)) return false;
+      const srcIdx = laneIdSets.findIndex((s) => s.has(e.sourceRef?.id));
+      const tgtIdx = laneIdSets.findIndex((s) => s.has(e.targetRef?.id));
+      return srcIdx !== -1 && tgtIdx !== -1 && srcIdx !== tgtIdx;
+    })
+    .map((sf: any) => {
+      const edge: ElkExtendedEdge = {
+        id: sf.id as string,
+        sources: [sf.sourceRef.id as string],
+        targets: [sf.targetRef.id as string],
+      };
+      const sfName = sf.name as string | undefined;
+      if (sfName) {
+        const lblSize = estimateLabelSize(sfName);
+        (edge as any).labels = [{ id: `${sf.id as string}_label`, text: sfName, ...lblSize }];
+      }
+      return edge;
+    });
+
+  return {
+    id: processId,
+    layoutOptions: {
+      'elk.algorithm': 'layered',
+      'elk.direction': 'DOWN',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '0',
+      'elk.spacing.nodeNode': '30',
+      'elk.edgeRouting': 'ORTHOGONAL',
+      'elk.layered.unnecessaryBendpoints': 'true',
+      'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
+    },
+    children: laneNodes,
+    edges: crossLaneEdges,
+  };
 }
 
 // ─── two-pass gateway port assignment ────────────────────────────────────────
