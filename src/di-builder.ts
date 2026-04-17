@@ -200,9 +200,14 @@ export function collectShapesAndEdges(
 }
 
 /**
- * Compute orthogonal waypoints for a cross-lane sequence flow.
- * Exits the source element from the side facing the target and enters the
- * target from the opposite side, using a midpoint X for the bend.
+ * Compute orthogonal waypoints for a cross-lane sequence flow between
+ * vertically-stacked lanes.
+ *
+ * Downward (src above tgt): exit source SOUTH → travel down to target Y centre
+ *   → enter target from LEFT or RIGHT side.
+ * Upward (src below tgt): exit source EAST or WEST toward target X → travel
+ *   horizontally to target X centre → enter target from SOUTH.
+ * Same Y (degenerate): simple horizontal segment.
  */
 function routeCrossLaneWaypoints(
   src: Bounds,
@@ -213,14 +218,27 @@ function routeCrossLaneWaypoints(
   const tgtCx = tgt.x + tgt.width / 2;
   const srcCy = src.y + src.height / 2;
   const tgtCy = tgt.y + tgt.height / 2;
-  const forward = tgtCx >= srcCx;
-  const startX  = forward ? src.x + src.width : src.x;
-  const endX    = forward ? tgt.x             : tgt.x + tgt.width;
-  const midX    = (startX + endX) / 2;
   const pt = (x: number, y: number) =>
     (moddle as any).create('dc:Point', { x: Math.round(x), y: Math.round(y) });
-  if (Math.abs(srcCy - tgtCy) <= 1) return [pt(startX, srcCy), pt(endX, tgtCy)];
-  return [pt(startX, srcCy), pt(midX, srcCy), pt(midX, tgtCy), pt(endX, tgtCy)];
+
+  if (srcCy < tgtCy) {
+    // Downward: exit source bottom → down to target Y centre → enter target side
+    const startY = src.y + src.height;
+    if (Math.abs(srcCx - tgtCx) <= 1) return [pt(srcCx, startY), pt(tgtCx, tgt.y)];
+    const entryX = srcCx < tgtCx ? tgt.x : tgt.x + tgt.width;
+    return [pt(srcCx, startY), pt(srcCx, tgtCy), pt(entryX, tgtCy)];
+  } else if (srcCy > tgtCy) {
+    // Upward: exit source east/west → horizontal to target X → enter target bottom
+    const endY = tgt.y + tgt.height;
+    if (Math.abs(srcCx - tgtCx) <= 1) return [pt(srcCx, src.y), pt(tgtCx, endY)];
+    const exitX = srcCx < tgtCx ? src.x + src.width : src.x;
+    return [pt(exitX, srcCy), pt(tgtCx, srcCy), pt(tgtCx, endY)];
+  } else {
+    // Same Y: simple horizontal segment
+    const exitX = srcCx <= tgtCx ? src.x + src.width : src.x;
+    const entryX = srcCx <= tgtCx ? tgt.x : tgt.x + tgt.width;
+    return [pt(exitX, srcCy), pt(entryX, tgtCy)];
+  }
 }
 
 /**
@@ -254,6 +272,16 @@ export function collectLanedShapesAndEdges(
   const laneShapes: any[] = [];
   const nodeShapes: any[] = [];
   const allEdges: any[] = [];
+
+  // Elements that appear as source or target in any intra-lane edge should not
+  // be X-realigned, because ELK already placed them relative to lane-mates.
+  const intraLaneConnected = new Set<string>();
+  for (const laneNode of laidOutRoot.children ?? []) {
+    for (const edge of (laneNode.edges ?? []) as ElkExtendedEdge[]) {
+      intraLaneConnected.add((edge.sources[0] ?? '').replace(/__[NSEW]$/, ''));
+      intraLaneConnected.add((edge.targets[0] ?? '').replace(/__[NSEW]$/, ''));
+    }
+  }
 
   // Accumulate lane Y in document order (independent of ELK's laneNode.y so that
   // MIN_LANE_HEIGHT adjustments don't break alignment between lanes).
@@ -292,6 +320,32 @@ export function collectLanedShapesAndEdges(
     );
     nodeShapes.push(...shapes);
     allEdges.push(...edges);
+  }
+
+  // Align cross-lane targets that have no intra-lane connections to their source
+  // element's X centre.  ELK places lone elements at the leftmost position within
+  // their lane; aligning them with the source avoids long horizontal detours.
+  const nodeShapeMap = new Map<string, any>();
+  for (const shape of nodeShapes) {
+    const elemId = shape.bpmnElement?.id as string | undefined;
+    if (elemId) nodeShapeMap.set(elemId, shape);
+  }
+  const alignedTargets = new Set<string>();
+  for (const edge of (laidOutRoot.edges ?? []) as ElkExtendedEdge[]) {
+    const rawSrc = (edge.sources[0] ?? '').replace(/__[NSEW]$/, '');
+    const rawTgt = (edge.targets[0] ?? '').replace(/__[NSEW]$/, '');
+    if (intraLaneConnected.has(rawTgt) || alignedTargets.has(rawTgt)) continue;
+    alignedTargets.add(rawTgt);
+    const srcBounds = boundsMap.get(rawSrc);
+    const tgtBounds = boundsMap.get(rawTgt);
+    if (!srcBounds || !tgtBounds) continue;
+    const dx = Math.round(
+      (srcBounds.x + srcBounds.width / 2) - (tgtBounds.x + tgtBounds.width / 2),
+    );
+    if (dx === 0) continue;
+    tgtBounds.x += dx;
+    const shape = nodeShapeMap.get(rawTgt);
+    if (shape?.bounds) shape.bounds.x += dx;
   }
 
   // Cross-lane edges are at the root level.  ELK does not reliably produce

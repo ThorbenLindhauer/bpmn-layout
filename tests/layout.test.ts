@@ -937,3 +937,63 @@ describe('plain process with lanes', () => {
     }
   });
 });
+
+// ─── lanes complex (alignment and routing) ───────────────────────────────────
+
+describe('lanes complex (alignment and routing)', () => {
+  it('Activity_11r0yy5 X-center is aligned with Gateway_14m9agw X-center', async () => {
+    const result = await layout(fixture('lanes-complex.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    const gw = byId['Gateway_14m9agw'];
+    const act = byId['Activity_11r0yy5'];
+    expect(gw).toBeDefined();
+    expect(act).toBeDefined();
+    const gwCx = gw.x + gw.width / 2;
+    const actCx = act.x + act.width / 2;
+    expect(Math.abs(gwCx - actCx)).toBeLessThanOrEqual(5);
+  });
+
+  it('downward cross-lane flow exits source SOUTH and enters target from side', async () => {
+    const result = await layout(fixture('lanes-complex.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    const flow = edges.find((e: any) => e.bpmnElement.id === 'Flow_015x1bv');
+    expect(flow).toBeDefined();
+    expect(flow.waypoint.length).toBeGreaterThanOrEqual(2);
+    const wps: Array<{ x: number; y: number }> = flow.waypoint;
+    // First waypoint should be at or below the source bottom edge
+    const srcBounds = byId['Gateway_14m9agw'];
+    expect(wps[0].y).toBeGreaterThanOrEqual(srcBounds.y + srcBounds.height - 1);
+    // All segments orthogonal
+    for (let i = 0; i < wps.length - 1; i++) {
+      const a = wps[i], b = wps[i + 1];
+      expect(
+        Math.abs(a.y - b.y) <= 1 || Math.abs(a.x - b.x) <= 1,
+        `Flow_015x1bv segment ${i}→${i + 1}: (${a.x},${a.y})→(${b.x},${b.y}) is not axis-aligned`,
+      ).toBe(true);
+    }
+  });
+
+  it('upward cross-lane flow exits source EAST/WEST and enters target from SOUTH', async () => {
+    const result = await layout(fixture('lanes-complex.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    const flow = edges.find((e: any) => e.bpmnElement.id === 'Flow_0z70b5w');
+    expect(flow).toBeDefined();
+    expect(flow.waypoint.length).toBeGreaterThanOrEqual(2);
+    const wps: Array<{ x: number; y: number }> = flow.waypoint;
+    // Last waypoint should be at or below the target bottom edge (enters from south)
+    const tgtBounds = byId['Gateway_1t5kekb'];
+    const lastWp = wps[wps.length - 1];
+    expect(lastWp.y).toBeGreaterThanOrEqual(tgtBounds.y + tgtBounds.height - 1);
+    // All segments orthogonal
+    for (let i = 0; i < wps.length - 1; i++) {
+      const a = wps[i], b = wps[i + 1];
+      expect(
+        Math.abs(a.y - b.y) <= 1 || Math.abs(a.x - b.x) <= 1,
+        `Flow_0z70b5w segment ${i}→${i + 1}: (${a.x},${a.y})→(${b.x},${b.y}) is not axis-aligned`,
+      ).toBe(true);
+    }
+  });
+});
