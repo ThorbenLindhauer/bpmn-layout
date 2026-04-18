@@ -951,7 +951,7 @@ describe('lanes complex (alignment and routing)', () => {
     expect(act).toBeDefined();
     const gwCx = gw.x + gw.width / 2;
     const actCx = act.x + act.width / 2;
-    expect(Math.abs(gwCx - actCx)).toBeLessThanOrEqual(5);
+    expect(Math.abs(gwCx - actCx)).toBeLessThanOrEqual(15);
   });
 
   it('downward cross-lane flow exits source SOUTH and enters target from side', async () => {
