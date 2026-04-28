@@ -171,9 +171,20 @@ export function buildElkGraphForLanes(
   allFlowElements: any[],
   isExpandedMap: Map<string, boolean>,
 ): ElkNode {
-  const laneIdSets = lanes.map((lane: any) =>
-    new Set<string>((lane.flowNodeRef ?? []).map((n: any) => n.id as string)),
-  );
+  // Build sets of node IDs per lane from flowNodeRef, then extend with any
+  // boundary events whose attachedToRef host is already in the same lane set.
+  // Some BPMN tools omit boundary events from flowNodeRef; this ensures they are
+  // still placed as ELK ports on their host and that their outgoing cross-lane
+  // flows are correctly identified and routed.
+  const laneIdSets = lanes.map((lane: any) => {
+    const ids = new Set<string>((lane.flowNodeRef ?? []).map((n: any) => n.id as string));
+    for (const e of allFlowElements) {
+      if (e.$type === 'bpmn:BoundaryEvent' && ids.has(e.attachedToRef?.id)) {
+        ids.add(e.id as string);
+      }
+    }
+    return ids;
+  });
 
   const laneNodes: ElkNode[] = lanes.map((lane: any, i: number) => {
     const laneIds = laneIdSets[i];

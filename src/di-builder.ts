@@ -322,6 +322,18 @@ export function collectLanedShapesAndEdges(
     allEdges.push(...edges);
   }
 
+  // Build host→portIds map from ELK output so boundary event ports can be
+  // shifted together with their host when the alignment step moves the host.
+  const hostPortIds = new Map<string, string[]>();
+  for (const laneNode of laidOutRoot.children ?? []) {
+    for (const child of (laneNode.children ?? []) as ElkNode[]) {
+      const portIds = (child.ports ?? [])
+        .map((p: any) => p.id as string)
+        .filter((id: string) => boundsMap.has(id));
+      if (portIds.length > 0) hostPortIds.set(child.id, portIds);
+    }
+  }
+
   // Align cross-lane targets that have no intra-lane connections to their source
   // element's X centre.  ELK places lone elements at the leftmost position within
   // their lane; aligning them with the source avoids long horizontal detours.
@@ -346,6 +358,13 @@ export function collectLanedShapesAndEdges(
     tgtBounds.x += dx;
     const shape = nodeShapeMap.get(rawTgt);
     if (shape?.bounds) shape.bounds.x += dx;
+    // Shift boundary event ports attached to this host by the same delta.
+    for (const portId of hostPortIds.get(rawTgt) ?? []) {
+      const portBounds = boundsMap.get(portId);
+      if (portBounds) portBounds.x += dx;
+      const portShape = nodeShapeMap.get(portId);
+      if (portShape?.bounds) portShape.bounds.x += dx;
+    }
   }
 
   // Cross-lane edges are at the root level.  ELK does not reliably produce

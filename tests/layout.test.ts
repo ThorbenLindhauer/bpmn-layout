@@ -997,3 +997,76 @@ describe('lanes complex (alignment and routing)', () => {
     }
   });
 });
+
+// ─── boundary events in lanes ─────────────────────────────────────────────────
+
+describe('boundary event in lane (be in flowNodeRef)', () => {
+  // pool-with-lanes-be.bpmn: Lane 1 has a parallel gateway (gw1) with a cross-lane
+  // outgoing flow to task2 in Lane 2.  task2 has boundary event be1 (listed in
+  // flowNodeRef) whose outgoing flow crosses back to Lane 1's end event.
+  //
+  // The alignment step X-shifts task2 to align with gw1's centre, but must also
+  // shift be1's position by the same amount so the boundary event stays visually
+  // attached to its host.
+
+  it('boundary event be1 is present in the layout output', async () => {
+    const result = await layout(fixture('pool-with-lanes-be.bpmn'));
+    const { shapes } = await parseDi(result);
+    const ids = shapes.map((s: any) => s.bpmnElement.id);
+    expect(ids).toContain('be1');
+  });
+
+  it('boundary event be1 centre X matches host task2 centre X (attached, not floating)', async () => {
+    const result = await layout(fixture('pool-with-lanes-be.bpmn'));
+    const { shapes } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    const task2 = byId['task2'];
+    const be1   = byId['be1'];
+    expect(task2).toBeDefined();
+    expect(be1).toBeDefined();
+    const task2Cx = task2.x + task2.width  / 2;
+    const be1Cx   = be1.x   + be1.width    / 2;
+    expect(Math.abs(task2Cx - be1Cx)).toBeLessThan(task2.width / 2 + 1);
+  });
+
+  it('cross-lane flow sf4 from boundary event be1 is present', async () => {
+    const result = await layout(fixture('pool-with-lanes-be.bpmn'));
+    const { edges } = await parseDi(result);
+    const ids = edges.map((e: any) => e.bpmnElement.id);
+    expect(ids).toContain('sf4');
+  });
+
+  it('cross-lane flow sf4 first waypoint is near be1 (routing starts from boundary event)', async () => {
+    const result = await layout(fixture('pool-with-lanes-be.bpmn'));
+    const { shapes, edges } = await parseDi(result);
+    const byId = Object.fromEntries(shapes.map((s: any) => [s.bpmnElement.id, s.bounds]));
+    const sf4 = edges.find((e: any) => e.bpmnElement.id === 'sf4');
+    expect(sf4).toBeDefined();
+    const be1 = byId['be1'];
+    const firstWp = sf4.waypoint[0];
+    const be1Cx = be1.x + be1.width / 2;
+    const be1Cy = be1.y + be1.height / 2;
+    const dist = Math.sqrt((firstWp.x - be1Cx) ** 2 + (firstWp.y - be1Cy) ** 2);
+    expect(dist).toBeLessThan(be1.width);
+  });
+});
+
+describe('boundary event in lane (be NOT in flowNodeRef)', () => {
+  // pool-with-lanes-be-no-fnr.bpmn: identical structure but be1 is intentionally
+  // omitted from lane2's flowNodeRef.  The layouter must still produce a shape for
+  // be1 (positioned on its host's boundary) and an edge for the cross-lane flow sf4.
+
+  it('boundary event be1 shape is present even when not in flowNodeRef', async () => {
+    const result = await layout(fixture('pool-with-lanes-be-no-fnr.bpmn'));
+    const { shapes } = await parseDi(result);
+    const ids = shapes.map((s: any) => s.bpmnElement.id);
+    expect(ids).toContain('be1');
+  });
+
+  it('cross-lane flow sf4 from boundary event is present even when be not in flowNodeRef', async () => {
+    const result = await layout(fixture('pool-with-lanes-be-no-fnr.bpmn'));
+    const { edges } = await parseDi(result);
+    const ids = edges.map((e: any) => e.bpmnElement.id);
+    expect(ids).toContain('sf4');
+  });
+});

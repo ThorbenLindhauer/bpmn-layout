@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  id="Defs1" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:collaboration id="collab1">
+    <bpmn:participant id="pool1" name="Pool" processRef="proc1"/>
+  </bpmn:collaboration>
+  <bpmn:process id="proc1" isExecutable="false">
+    <bpmn:laneSet id="ls1">
+      <bpmn:lane id="lane1" name="Lane 1">
+        <bpmn:flowNodeRef>start1</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>gw1</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>end1</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="lane2" name="Lane 2">
+        <!-- task2 is only connected via cross-lane flows so alignment applies -->
+        <bpmn:flowNodeRef>task2</bpmn:flowNodeRef>
+        <!-- be1 is listed in flowNodeRef (as Camunda Modeler exports) -->
+        <bpmn:flowNodeRef>be1</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="start1"><bpmn:outgoing>sf1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:parallelGateway id="gw1">
+      <bpmn:incoming>sf1</bpmn:incoming>
+      <bpmn:outgoing>sf2</bpmn:outgoing>
+      <bpmn:outgoing>sf3</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:endEvent id="end1">
+      <bpmn:incoming>sf3</bpmn:incoming>
+      <bpmn:incoming>sf4</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:task id="task2"><bpmn:incoming>sf2</bpmn:incoming></bpmn:task>
+    <bpmn:boundaryEvent id="be1" attachedToRef="task2">
+      <bpmn:outgoing>sf4</bpmn:outgoing>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="sf1" sourceRef="start1" targetRef="gw1"/>
+    <bpmn:sequenceFlow id="sf2" sourceRef="gw1"    targetRef="task2"/>
+    <bpmn:sequenceFlow id="sf3" sourceRef="gw1"    targetRef="end1"/>
+    <bpmn:sequenceFlow id="sf4" sourceRef="be1"    targetRef="end1"/>
+  </bpmn:process>
+</bpmn:definitions>
