@@ -165,32 +165,12 @@ export function buildElkGraph(process: any, isExpandedMap: Map<string, boolean> 
  * holistically, which means it can optimise element positions within each lane
  * knowing about cross-lane connections.
  */
-/**
- * Build an ELK graph for a process with lanes and return a port-to-element map.
- *
- * Each cross-lane sequence flow is split into three ELK edges:
- *   1. Synthetic intra-lane edge: source-node → exit-port  (inside source lane compound)
- *   2. Root-level edge (original BPMN flow ID): exit-port → entry-port
- *   3. Synthetic intra-lane edge: entry-port → target-node (inside target lane compound)
- *
- * The exit port sits on the SOUTH boundary of the source lane for downward flows
- * (NORTH for upward/backward flows); the entry port is on the opposite boundary of
- * the target lane.  With `portConstraints: FIXED_SIDE`, ELK is free to slide ports
- * along their assigned edge to minimise bends, so the target element is naturally
- * placed at a similar X to the source — alignment falls out of ELK's optimisation.
- *
- * The returned `portToElement` map is needed by `collectLanedShapesAndEdges` to
- * resolve boundary-port IDs back to the underlying BPMN element IDs when routing
- * cross-lane waypoints.
- */
 export function buildElkGraphForLanes(
   processId: string,
   lanes: any[],
   allFlowElements: any[],
   isExpandedMap: Map<string, boolean>,
-): { graph: ElkNode; portToElement: Map<string, string> } {
-  const portToElement = new Map<string, string>();
-
+): ElkNode {
   const laneIdSets = lanes.map((lane: any) =>
     new Set<string>((lane.flowNodeRef ?? []).map((n: any) => n.id as string)),
   );
@@ -221,65 +201,28 @@ export function buildElkGraphForLanes(
     };
   });
 
-  // For each cross-lane flow, attach boundary ports to the source and target lane
-  // compounds and build the three-part edge structure described above.
-  const crossLaneEdges: ElkExtendedEdge[] = [];
+  const crossLaneEdges: ElkExtendedEdge[] = allFlowElements
+    .filter((e: any) => {
+      if (!EDGE_TYPES.has(e.$type as string)) return false;
+      const srcIdx = laneIdSets.findIndex((s) => s.has(e.sourceRef?.id));
+      const tgtIdx = laneIdSets.findIndex((s) => s.has(e.targetRef?.id));
+      return srcIdx !== -1 && tgtIdx !== -1 && srcIdx !== tgtIdx;
+    })
+    .map((sf: any) => {
+      const edge: ElkExtendedEdge = {
+        id: sf.id as string,
+        sources: [sf.sourceRef.id as string],
+        targets: [sf.targetRef.id as string],
+      };
+      const sfName = sf.name as string | undefined;
+      if (sfName) {
+        const lblSize = estimateLabelSize(sfName);
+        (edge as any).labels = [{ id: `${sf.id as string}_label`, text: sfName, ...lblSize }];
+      }
+      return edge;
+    });
 
-  for (const sf of allFlowElements) {
-    if (!EDGE_TYPES.has(sf.$type as string)) continue;
-    const srcId = sf.sourceRef?.id as string | undefined;
-    const tgtId = sf.targetRef?.id as string | undefined;
-    if (!srcId || !tgtId) continue;
-    const srcIdx = laneIdSets.findIndex((s) => s.has(srcId));
-    const tgtIdx = laneIdSets.findIndex((s) => s.has(tgtId));
-    if (srcIdx === -1 || tgtIdx === -1 || srcIdx === tgtIdx) continue;
-
-    const exitPortId  = `${sf.id as string}__xp_exit`;
-    const entryPortId = `${sf.id as string}__xp_entry`;
-    portToElement.set(exitPortId,  srcId);
-    portToElement.set(entryPortId, tgtId);
-
-    // Forward (downward) flow: source lane above target lane.
-    // Backward (upward) flow: source lane below target lane.
-    const forward = srcIdx < tgtIdx;
-    const exitSide  = forward ? 'SOUTH' : 'NORTH';
-    const entrySide = forward ? 'NORTH' : 'SOUTH';
-
-    // ── source lane: add exit port + synthetic intra-lane edge ──────────────
-    const srcLane = laneNodes[srcIdx];
-    srcLane.ports = [...(srcLane.ports ?? []),
-      { id: exitPortId, width: 0, height: 0, layoutOptions: { 'elk.port.side': exitSide } },
-    ];
-    srcLane.edges = [...(srcLane.edges ?? []),
-      { id: `${sf.id as string}__xp_exit_edge`, sources: [srcId], targets: [exitPortId] } as ElkExtendedEdge,
-    ];
-    srcLane.layoutOptions = { ...srcLane.layoutOptions, 'elk.portConstraints': 'FIXED_SIDE' };
-
-    // ── target lane: add entry port + synthetic intra-lane edge ─────────────
-    const tgtLane = laneNodes[tgtIdx];
-    tgtLane.ports = [...(tgtLane.ports ?? []),
-      { id: entryPortId, width: 0, height: 0, layoutOptions: { 'elk.port.side': entrySide } },
-    ];
-    tgtLane.edges = [...(tgtLane.edges ?? []),
-      { id: `${sf.id as string}__xp_entry_edge`, sources: [entryPortId], targets: [tgtId] } as ElkExtendedEdge,
-    ];
-    tgtLane.layoutOptions = { ...tgtLane.layoutOptions, 'elk.portConstraints': 'FIXED_SIDE' };
-
-    // ── root-level edge carrying the original BPMN flow ID ──────────────────
-    const rootEdge: ElkExtendedEdge = {
-      id: sf.id as string,
-      sources: [exitPortId],
-      targets: [entryPortId],
-    };
-    const sfName = sf.name as string | undefined;
-    if (sfName) {
-      const lblSize = estimateLabelSize(sfName);
-      (rootEdge as any).labels = [{ id: `${sf.id as string}_label`, text: sfName, ...lblSize }];
-    }
-    crossLaneEdges.push(rootEdge);
-  }
-
-  const graph: ElkNode = {
+  return {
     id: processId,
     layoutOptions: {
       'elk.algorithm': 'layered',
@@ -293,8 +236,6 @@ export function buildElkGraphForLanes(
     children: laneNodes,
     edges: crossLaneEdges,
   };
-
-  return { graph, portToElement };
 }
 
 // ─── two-pass gateway port assignment ────────────────────────────────────────

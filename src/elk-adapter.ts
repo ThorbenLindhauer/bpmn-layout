@@ -112,7 +112,7 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
 
       if (lanes.length > 0) {
         // ── Pool with lanes: hierarchical ELK compound-node layout ────────────
-        const { graph: elkGraph, portToElement } = buildElkGraphForLanes(
+        const elkGraph = buildElkGraphForLanes(
           process.id as string, lanes, process.flowElements ?? [], isExpandedMap,
         );
 
@@ -151,7 +151,7 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
         const contentOffsetX = POOL_LABEL_WIDTH + LANE_LABEL_WIDTH;
         const { laneShapes, nodeShapes, allEdges: laneEdges } = collectLanedShapesAndEdges(
           laidOut, moddle, elementMap, boundsMap,
-          existingShapes, existingEdges, poolWidth, contentOffsetX, currentY, portToElement,
+          existingShapes, existingEdges, poolWidth, contentOffsetX, currentY,
         );
         allShapes.push(...laneShapes, ...nodeShapes);
         allEdges.push(...laneEdges);
@@ -220,7 +220,7 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
 
       if (lanes.length > 0) {
         // ── Plain process with lanes ─────────────────────────────────────────
-        const { graph: elkGraph, portToElement } = buildElkGraphForLanes(
+        const elkGraph = buildElkGraphForLanes(
           process.id as string, lanes, process.flowElements ?? [], isExpandedMap,
         );
 
@@ -236,7 +236,7 @@ export async function layoutBpmn(bpmnXml: string): Promise<string> {
         const laneWidth = LANE_LABEL_WIDTH + maxLaneWidth;
         const { laneShapes, nodeShapes, allEdges: laneEdges } = collectLanedShapesAndEdges(
           laidOut, moddle, elementMap, boundsMap,
-          existingShapes, existingEdges, laneWidth, LANE_LABEL_WIDTH, 0, portToElement,
+          existingShapes, existingEdges, laneWidth, LANE_LABEL_WIDTH, 0,
         );
         allShapes.push(...laneShapes, ...nodeShapes);
         allEdges.push(...laneEdges);

@@ -268,11 +268,20 @@ export function collectLanedShapesAndEdges(
   poolWidth: number,
   contentOffsetX: number,
   originY: number,
-  portToElement: Map<string, string> = new Map(),
 ): { laneShapes: any[]; nodeShapes: any[]; allEdges: any[] } {
   const laneShapes: any[] = [];
   const nodeShapes: any[] = [];
   const allEdges: any[] = [];
+
+  // Elements that appear as source or target in any intra-lane edge should not
+  // be X-realigned, because ELK already placed them relative to lane-mates.
+  const intraLaneConnected = new Set<string>();
+  for (const laneNode of laidOutRoot.children ?? []) {
+    for (const edge of (laneNode.edges ?? []) as ElkExtendedEdge[]) {
+      intraLaneConnected.add((edge.sources[0] ?? '').replace(/__[NSEW]$/, ''));
+      intraLaneConnected.add((edge.targets[0] ?? '').replace(/__[NSEW]$/, ''));
+    }
+  }
 
   // Accumulate lane Y in document order (independent of ELK's laneNode.y so that
   // MIN_LANE_HEIGHT adjustments don't break alignment between lanes).
@@ -313,19 +322,42 @@ export function collectLanedShapesAndEdges(
     allEdges.push(...edges);
   }
 
+  // Align cross-lane targets that have no intra-lane connections to their source
+  // element's X centre.  ELK places lone elements at the leftmost position within
+  // their lane; aligning them with the source avoids long horizontal detours.
+  const nodeShapeMap = new Map<string, any>();
+  for (const shape of nodeShapes) {
+    const elemId = shape.bpmnElement?.id as string | undefined;
+    if (elemId) nodeShapeMap.set(elemId, shape);
+  }
+  const alignedTargets = new Set<string>();
+  for (const edge of (laidOutRoot.edges ?? []) as ElkExtendedEdge[]) {
+    const rawSrc = (edge.sources[0] ?? '').replace(/__[NSEW]$/, '');
+    const rawTgt = (edge.targets[0] ?? '').replace(/__[NSEW]$/, '');
+    if (intraLaneConnected.has(rawTgt) || alignedTargets.has(rawTgt)) continue;
+    alignedTargets.add(rawTgt);
+    const srcBounds = boundsMap.get(rawSrc);
+    const tgtBounds = boundsMap.get(rawTgt);
+    if (!srcBounds || !tgtBounds) continue;
+    const dx = Math.round(
+      (srcBounds.x + srcBounds.width / 2) - (tgtBounds.x + tgtBounds.width / 2),
+    );
+    if (dx === 0) continue;
+    tgtBounds.x += dx;
+    const shape = nodeShapeMap.get(rawTgt);
+    if (shape?.bounds) shape.bounds.x += dx;
+  }
+
   // Cross-lane edges are at the root level.  ELK does not reliably produce
   // sections for hierarchical edges connecting nodes inside compound children,
-  // so we compute orthogonal waypoints manually from the element bounds.
-  // Root-level edge sources/targets may be boundary-port IDs (e.g. sf2__xp_exit);
-  // portToElement resolves them to the underlying BPMN element IDs.
+  // so we compute orthogonal waypoints manually from the element bounds that
+  // were populated in the loop above.
   for (const edge of (laidOutRoot.edges ?? []) as ElkExtendedEdge[]) {
     const element = elementMap.get(edge.id);
     if (!element) continue;
 
-    const rawSrc0 = (edge.sources[0] ?? '').replace(/__[NSEW]$/, '');
-    const rawTgt0 = (edge.targets[0] ?? '').replace(/__[NSEW]$/, '');
-    const rawSrc = portToElement.get(rawSrc0) ?? rawSrc0;
-    const rawTgt = portToElement.get(rawTgt0) ?? rawTgt0;
+    const rawSrc = (edge.sources[0] ?? '').replace(/__[NSEW]$/, '');
+    const rawTgt = (edge.targets[0] ?? '').replace(/__[NSEW]$/, '');
     const srcBounds = boundsMap.get(rawSrc);
     const tgtBounds = boundsMap.get(rawTgt);
     if (!srcBounds || !tgtBounds) continue;
